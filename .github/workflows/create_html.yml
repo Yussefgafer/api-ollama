@@ -24,12 +24,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # *** أضف هذا الجزء الجديد هنا ***
+    permissions:
+      contents: write # امنح أذونات الكتابة على محتوى المستودع
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
         with:
-          # *** هذا هو السطر الذي يجب إضافته أو تعديله ***
           token: ${{ secrets.GITHUB_TOKEN }} 
 
       - name: Set up Python
