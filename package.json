@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "description": "MCP server for RikkaHub with advanced web, file, terminal, Drive, Supabase, and programming tools.",
   "main": "server.js",
-  "scripts":{
+  "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
@@ -12,18 +12,14 @@
     "mathjs": "^12.4.2",
     "googleapis": "^137.0.0",
     "uuid": "^9.0.1",
-    "supabase-js": "^2.43.4",    // <-- جديد
-    "archiver": "^7.0.1",        // <-- جديد
-    "decompress": "^5.0.0",      // <-- جديد
-    "vm2": "^3.9.19"             // <-- جديد (لتشغيل الكود بأمان نسبي)
+    "@supabase/supabase-js": "^2.43.4",
+    "archiver": "^7.0.1",
+    "decompress": "^5.0.0",
+    "vm2": "^3.9.19"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": [
-    "mcp", "rikkahub", "ai", "tools", "web-agent",
-    "file-management", "terminal", "supabase", "programming-tools"
-  ],
   "author": "Your Name",
   "license": "MIT"
 }
