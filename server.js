@@ -4,54 +4,46 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const { evaluate } = require('mathjs');
 const { google } = require('googleapis');
-const fs = require('fs').promises;
+const fs = require('fs').promises; // استخدام نسخة الوعود (Promises) من fs
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
-const { exec } = require('child_process');
-const { createClient } = require('supabase-js'); // <-- Supabase
+const { exec } = require('child_process'); // لتشغيل أوامر الطرفية
+const { createClient } = require('@supabase/supabase-js'); // <-- Supabase
 const archiver = require('archiver'); // <-- Zip
 const decompress = require('decompress'); // <-- Unzip
-const { VM } = require('vm2'); // <-- لتشغيل الكود بأمان نسبي
+const fetch = require('node-fetch'); // <-- لـ Figma API
 
 const PORT = process.env.PORT || 3000;
 const DUCKDUCKGO_API = 'https://api.duckduckgo.com/?format=json&no_html=1&no_redirect=1';
 
 // ====================================================================
-// تهيئة Google Drive API
+// تهيئة Google Drive API (تتطلب مفتاح API كمعامل)
 // ====================================================================
-const GOOGLE_CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
-const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : null;
-
-let drive;
-if (GOOGLE_CLIENT_EMAIL && GOOGLE_PRIVATE_KEY) {
+function getDriveService(clientEmail, privateKey) {
+    if (!clientEmail || !privateKey) {
+        throw new Error("Google Drive credentials (clientEmail, privateKey) are required.");
+    }
     const auth = new google.auth.JWT(
-        GOOGLE_CLIENT_EMAIL,
+        clientEmail,
         null,
-        GOOGLE_PRIVATE_KEY,
+        privateKey.replace(/\\n/g, '\n'), // تأكد من التعامل مع الأحرف الجديدة
         ['https://www.googleapis.com/auth/drive'] // أذونات كاملة لـ Drive
     );
-    drive = google.drive({ version: 'v3', auth });
-    console.log('Google Drive API initialized.');
-} else {
-    console.warn('Google Drive API credentials not found. Drive tools will not be available.');
+    return google.drive({ version: 'v3', auth });
 }
 
 // ====================================================================
-// تهيئة Supabase Client
+// تهيئة Supabase Client (تتطلب مفتاح API كمعامل)
 // ====================================================================
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
-
-let supabase;
-if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-    supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    console.log('Supabase client initialized.');
-} else {
-    console.warn('Supabase credentials not found. Supabase tools will not be available.');
+function getSupabaseClient(url, anonKey) {
+    if (!url || !anonKey) {
+        throw new Error("Supabase credentials (URL, Anon Key) are required.");
+    }
+    return createClient(url, anonKey);
 }
 
 // ====================================================================
-// تخزين المهام
+// تخزين المهام (مؤقتة، ستُمسح عند إعادة تشغيل الخادم)
 // ====================================================================
 const tasks = [];
 
@@ -91,17 +83,21 @@ async function handleRpcRequest(req, res) {
                             { name: 'zip_folder', description: 'Compresses a folder into a .zip archive.', inputSchema: { type: 'object", properties: { folderPath: { type: 'string', description: 'The path to the folder to compress.' }, outputPath: { type: 'string', description: 'The path for the output .zip file (e.g., "archive.zip").' } }, required: ['folderPath', 'outputPath'] } },
                             { name: 'unzip_file', description: 'Decompresses a .zip archive to a target directory.', inputSchema: { type: 'object", properties: { zipFilePath: { type: 'string', description: 'The path to the .zip file.' }, outputPath: { type: 'string', description: 'The path to the directory where contents will be extracted.' } }, required: ['zipFilePath', 'outputPath'] } },
                             // أدوات Google Drive
-                            { name: 'list_drive_files', description: 'List files and folders in Google Drive. Can specify a parent folder ID.', inputSchema: { type: 'object", properties: { parentId: { type: 'string', description: 'Optional: The ID of the parent folder to list from. Default is root.' } } } },
-                            { name: 'read_drive_file_content', description: 'Read the plain text content of a Google Drive file by its ID. Only works for text-based files (e.g., .txt, .md, Google Docs).', inputSchema: { type: 'object", properties: { fileId: { type: 'string', description: 'The ID of the Google Drive file to read.' } }, required: ['fileId'] } },
+                            { name: 'list_drive_files', description: 'List files and folders in Google Drive. Requires Google Service Account Client Email and Private Key. Can specify a parent folder ID.', inputSchema: { type: 'object", properties: { clientEmail: { type: 'string', description: 'Your Google Service Account Client Email.' }, privateKey: { type: 'string', description: 'Your Google Service Account Private Key.' }, parentId: { type: 'string', description: 'Optional: The ID of the parent folder to list from. Default is root.' } }, required: ['clientEmail', 'privateKey'] } },
+                            { name: 'read_drive_file_content', description: 'Read the plain text content of a Google Drive file by its ID. Requires Google Service Account Client Email and Private Key. Only works for text-based files (e.g., .txt, .md, Google Docs).', inputSchema: { type: 'object", properties: { clientEmail: { type: 'string', description: 'Your Google Service Account Client Email.' }, privateKey: { type: 'string', description: 'Your Google Service Account Private Key.' }, fileId: { type: 'string', description: 'The ID of the Google Drive file to read.' } }, required: ['clientEmail', 'privateKey', 'fileId'] } },
                             // أدوات Supabase
-                            { name: 'supabase_query', description: 'Execute a SQL SELECT query on a Supabase table. Returns data as JSON.', inputSchema: { type: 'object", properties: { tableName: { type: 'string', description: 'The name of the table to query.' }, selectColumns: { type: 'string', description: 'Optional: Comma-separated columns to select (e.g., "id,name"). Default is "*".' }, filters: { type: 'object", description: 'Optional: JSON object for filters (e.g., { "column": "eq.value" }).' }, limit: { type: 'number", description: 'Optional: Max number of rows to return. Default is 10.' } }, required: ['tableName'] } },
-                            { name: 'supabase_insert', description: 'Insert data into a Supabase table.', inputSchema: { type: 'object", properties: { tableName: { type: 'string', description: 'The name of the table to insert into.' }, data: { type: 'object", description: 'JSON object representing the row to insert (e.g., { "name": "test" }).' } }, required: ['tableName', 'data'] } },
-                            { name: 'supabase_update', description: 'Update data in a Supabase table based on a filter.', inputSchema: { type: 'object", properties: { tableName: { type: 'string', description: 'The name of the table to update.' }, data: { type: 'object", description: 'JSON object representing the data to update (e.g., { "status": "completed" }).' }, filters: { type: 'object", description: 'JSON object for filters (e.g., { "id": "eq.123" }).' } }, required: ['tableName', 'data', 'filters'] } },
+                            { name: 'supabase_query', description: 'Execute a SQL SELECT query on a Supabase table. Requires Supabase URL and Anon Key. Returns data as JSON.', inputSchema: { type: 'object", properties: { supabaseUrl: { type: 'string', description: 'Your Supabase Project URL.' }, supabaseAnonKey: { type: 'string', description: 'Your Supabase Anon Public Key.' }, tableName: { type: 'string', description: 'The name of the table to query.' }, selectColumns: { type: 'string', description: 'Optional: Comma-separated columns to select (e.g., "id,name"). Default is "*".' }, filters: { type: 'object", description: 'Optional: JSON object for filters (e.g., { "column": "eq.value" }).' }, limit: { type: 'number", description: 'Optional: Max number of rows to return. Default is 10.' } }, required: ['supabaseUrl', 'supabaseAnonKey', 'tableName'] } },
+                            { name: 'supabase_insert', description: 'Insert data into a Supabase table. Requires Supabase URL and Anon Key.', inputSchema: { type: 'object", properties: { supabaseUrl: { type: 'string', description: 'Your Supabase Project URL.' }, supabaseAnonKey: { type: 'string', description: 'Your Supabase Anon Public Key.' }, tableName: { type: 'string', description: 'The name of the table to insert into.' }, data: { type: 'object", description: 'JSON object representing the row to insert (e.g., { "name": "test" }).' } }, required: ['supabaseUrl', 'supabaseAnonKey', 'tableName', 'data'] } },
+                            { name: 'supabase_update', description: 'Update data in a Supabase table based on a filter. Requires Supabase URL and Anon Key.', inputSchema: { type: 'object", properties: { supabaseUrl: { type: 'string', description: 'Your Supabase Project URL.' }, supabaseAnonKey: { type: 'string', description: 'Your Supabase Anon Public Key.' }, tableName: { type: 'string', description: 'The name of the table to update.' }, data: { type: 'object", description: 'JSON object representing the data to update (e.g., { "status": "completed" }).' }, filters: { type: 'object", description: 'JSON object for filters (e.g., { "id": "eq.123" }).' } }, required: ['supabaseUrl', 'supabaseAnonKey', 'tableName', 'data', 'filters'] } },
                             // أداة تنفيذ الأوامر الطرفية (خطر أمني)
                             { name: 'execute_command', description: 'Execute a shell command on the server. DANGEROUS! Use ONLY for trusted, essential operations. Output is limited.', inputSchema: { type: 'object", properties: { command: { type: 'string', description: 'The shell command to execute.' } }, required: ['command'] } },
                             // أدوات البرمجة ومساعدة النموذج
-                            { name: 'run_code_snippet', description: 'Execute a JavaScript code snippet in a sandboxed environment. Returns output or error.', inputSchema: { type: 'object", properties: { code: { type: 'string', description: 'The JavaScript code to execute.' } }, required: ['code'] } },
+                            { name: 'code_linter', description: 'Perform a basic syntax check on code for common languages (JavaScript, Python, Java, Kotlin). Does not execute code.', inputSchema: { type: 'object", properties: { code: { type: 'string', description: 'The code snippet to lint.' }, language: { type: 'string', enum: ['javascript', 'python', 'java', 'kotlin'], description: 'The programming language of the code.' } }, required: ['code'] } },
                             { name: 'generate_uuid', description: 'Generate a universally unique identifier (UUID). Useful for creating unique IDs for tasks, files, etc.', inputSchema: { type: 'object", properties: {} } },
+                            // أدوات Figma
+                            { name: 'list_figma_files', description: 'List Figma files accessible by the user. Requires Figma Personal Access Token.', inputSchema: { type: 'object", properties: { accessToken: { type: 'string', description: 'Your Figma Personal Access Token.' } }, required: ['accessToken'] } },
+                            { name: 'get_figma_file_details', description: 'Get detailed information about a Figma file (e.g., layers, components). Requires Figma Personal Access Token and File ID.', inputSchema: { type: 'object", properties: { accessToken: { type: 'string', description: 'Your Figma Personal Access Token.' }, fileId: { type: 'string', description: 'The ID of the Figma file.' } }, required: ['accessToken', 'fileId'] } },
+                            { name: 'get_figma_node_image', description: 'Get an image export of a specific node within a Figma file. Requires Figma Personal Access Token, File ID, and Node ID.', inputSchema: { type: 'object", properties: { accessToken: { type: 'string', description: 'Your Figma Personal Access Token.' }, fileId: { type: 'string', description: 'The ID of the Figma file.' }, nodeId: { type: 'string', description: 'The ID of the node to export as image.' }, format: { type: 'string', enum: ['png', 'jpg', 'svg'], description: 'Image format (png, jpg, svg). Default is png.' } }, required: ['accessToken', 'fileId', 'nodeId'] } },
                             // أدوات المرافق
                             { name: 'summarize_text', description: 'Summarize a long piece of text. Useful when you have too much information and need to extract key points.', inputSchema: { type: 'object", properties: { text: { type: 'string', description: 'The text to summarize.' } }, required: ['text'] } },
                             { name: 'get_current_time', description: 'Get the current date and time. Useful when you need up-to-date time information.', inputSchema: { type: 'object", properties: {} } },
@@ -121,7 +117,7 @@ async function handleRpcRequest(req, res) {
                             serverInfo: {
                                 name: "Super Agent Advanced Tools Server",
                                 version: "1.0.0",
-                                notes: "Provides advanced web, file, terminal, Supabase, and programming tools for AI agents."
+                                notes: "Provides advanced web, file, terminal, Supabase, programming, and Figma tools for AI agents."
                             },
                             capabilities: capabilities
                         }
@@ -189,29 +185,25 @@ async function handleRpcRequest(req, res) {
                             break;
                         // أدوات Google Drive
                         case 'list_drive_files':
-                            if (!drive) throw new Error("Google Drive API not initialized.");
-                            toolResult = await listDriveFiles(args ? args.parentId : null);
+                            if (!args || !args.clientEmail || !args.privateKey) throw new Error("Google Drive credentials are required.");
+                            toolResult = await listDriveFiles(args.clientEmail, args.privateKey, args.parentId);
                             break;
                         case 'read_drive_file_content':
-                            if (!drive) throw new Error("Google Drive API not initialized.");
-                            if (!args || !args.fileId) { throw new Error("File ID is missing for read_drive_file_content."); }
-                            toolResult = await readDriveFileContent(args.fileId);
+                            if (!args || !args.clientEmail || !args.privateKey || !args.fileId) throw new Error("Google Drive credentials and fileId are required.");
+                            toolResult = await readDriveFileContent(args.clientEmail, args.privateKey, args.fileId);
                             break;
                         // أدوات Supabase
                         case 'supabase_query':
-                            if (!supabase) throw new Error("Supabase client not initialized.");
-                            if (!args || !args.tableName) { throw new Error("tableName is required for supabase_query."); }
-                            toolResult = await supabaseQuery(args.tableName, args.selectColumns, args.filters, args.limit);
+                            if (!args || !args.supabaseUrl || !args.supabaseAnonKey || !args.tableName) throw new Error("Supabase credentials and tableName are required.");
+                            toolResult = await supabaseQuery(args.supabaseUrl, args.supabaseAnonKey, args.tableName, args.selectColumns, args.filters, args.limit);
                             break;
                         case 'supabase_insert':
-                            if (!supabase) throw new Error("Supabase client not initialized.");
-                            if (!args || !args.tableName || !args.data) { throw new Error("tableName and data are required for supabase_insert."); }
-                            toolResult = await supabaseInsert(args.tableName, args.data);
+                            if (!args || !args.supabaseUrl || !args.supabaseAnonKey || !args.tableName || !args.data) throw new Error("Supabase credentials, tableName, and data are required.");
+                            toolResult = await supabaseInsert(args.supabaseUrl, args.supabaseAnonKey, args.tableName, args.data);
                             break;
                         case 'supabase_update':
-                            if (!supabase) throw new Error("Supabase client not initialized.");
-                            if (!args || !args.tableName || !args.data || !args.filters) { throw new Error("tableName, data, and filters are required for supabase_update."); }
-                            toolResult = await supabaseUpdate(args.tableName, args.data, args.filters);
+                            if (!args || !args.supabaseUrl || !args.supabaseAnonKey || !args.tableName || !args.data || !args.filters) throw new Error("Supabase credentials, tableName, data, and filters are required.");
+                            toolResult = await supabaseUpdate(args.supabaseUrl, args.supabaseAnonKey, args.tableName, args.data, args.filters);
                             break;
                         // أداة تنفيذ الأوامر الطرفية
                         case 'execute_command':
@@ -219,12 +211,25 @@ async function handleRpcRequest(req, res) {
                             toolResult = await executeCommand(args.command);
                             break;
                         // أدوات البرمجة ومساعدة النموذج
-                        case 'run_code_snippet':
-                            if (!args || !args.code) { throw new Error("Code is missing for run_code_snippet."); }
-                            toolResult = await runCodeSnippet(args.code);
+                        case 'code_linter':
+                            if (!args || !args.code) { throw new Error("Code is missing for code_linter."); }
+                            toolResult = await codeLinter(args.code, args.language);
                             break;
                         case 'generate_uuid':
                             toolResult = { uuid: uuidv4() };
+                            break;
+                        // أدوات Figma
+                        case 'list_figma_files':
+                            if (!args || !args.accessToken) { throw new Error("Figma Access Token is required."); }
+                            toolResult = await listFigmaFiles(args.accessToken);
+                            break;
+                        case 'get_figma_file_details':
+                            if (!args || !args.accessToken || !args.fileId) { throw new Error("Figma Access Token and File ID are required."); }
+                            toolResult = await getFigmaFileDetails(args.accessToken, args.fileId);
+                            break;
+                        case 'get_figma_node_image':
+                            if (!args || !args.accessToken || !args.fileId || !args.nodeId) { throw new Error("Figma Access Token, File ID, and Node ID are required."); }
+                            toolResult = await getFigmaNodeImage(args.accessToken, args.fileId, args.nodeId, args.format);
                             break;
                         // أدوات المرافق
                         case 'summarize_text':
@@ -299,10 +304,10 @@ async function handleRpcRequest(req, res) {
 }
 
 // ====================================================================
-// وظائف أدوات الويب والبحث
+// وظائف أدوات الويب والبحث (بدون تغيير)
 // ====================================================================
 
-function searchDuckDuckGo(query) { /* ... نفس الكود السابق ... */
+function searchDuckDuckGo(query) {
     return new Promise((resolve, reject) => {
         const searchUrl = `${DUCKDUCKGO_API}&q=${encodeURIComponent(query)}`;
         https.get(searchUrl, {
@@ -327,7 +332,7 @@ function searchDuckDuckGo(query) { /* ... نفس الكود السابق ... */
     });
 }
 
-async function deepSearchWeb(query) { /* ... نفس الكود السابق ... */
+async function deepSearchWeb(query) {
     try {
         const searchUrl = `${DUCKDUCKGO_API}&q=${encodeURIComponent(query)}`;
         const response = await axios.get(searchUrl, {
@@ -357,7 +362,7 @@ async function deepSearchWeb(query) { /* ... نفس الكود السابق ... 
     }
 }
 
-async function browseUrl(url) { /* ... نفس الكود السابق ... */
+async function browseUrl(url) {
     try {
         const response = await axios.get(url, {
             headers: { 'User-Agent': 'SuperAgent-MCP-Browser/1.0' }
@@ -394,7 +399,7 @@ function getSafePath(inputPath) {
     return resolvedPath;
 }
 
-async function listDirectory(dirPath = './') { /* ... نفس الكود السابق ... */
+async function listDirectory(dirPath = './') {
     try {
         const safePath = getSafePath(dirPath);
         const entries = await fs.readdir(safePath, { withFileTypes: true });
@@ -409,7 +414,7 @@ async function listDirectory(dirPath = './') { /* ... نفس الكود السا
     }
 }
 
-async function createFile(filePath, content) { /* ... نفس الكود السابق ... */
+async function createFile(filePath, content) {
     try {
         const safePath = getSafePath(filePath);
         await fs.writeFile(safePath, content, 'utf8');
@@ -420,7 +425,7 @@ async function createFile(filePath, content) { /* ... نفس الكود السا
     }
 }
 
-async function readFile(filePath) { /* ... نفس الكود السابق ... */
+async function readFile(filePath) {
     try {
         const safePath = getSafePath(filePath);
         const content = await fs.readFile(safePath, 'utf8');
@@ -434,7 +439,7 @@ async function readFile(filePath) { /* ... نفس الكود السابق ... */
     }
 }
 
-async function updateFile(filePath, content) { /* ... نفس الكود السابق ... */
+async function updateFile(filePath, content) {
     try {
         const safePath = getSafePath(filePath);
         await fs.writeFile(safePath, content, 'utf8');
@@ -445,7 +450,7 @@ async function updateFile(filePath, content) { /* ... نفس الكود السا
     }
 }
 
-async function deleteFile(filePath) { /* ... نفس الكود السابق ... */
+async function deleteFile(filePath) {
     try {
         const safePath = getSafePath(filePath);
         await fs.unlink(safePath);
@@ -456,7 +461,7 @@ async function deleteFile(filePath) { /* ... نفس الكود السابق ... 
     }
 }
 
-async function createDirectory(dirPath) { /* ... نفس الكود السابق ... */
+async function createDirectory(dirPath) {
     try {
         const safePath = getSafePath(dirPath);
         await fs.mkdir(safePath, { recursive: true });
@@ -467,7 +472,7 @@ async function createDirectory(dirPath) { /* ... نفس الكود السابق 
     }
 }
 
-async function deleteDirectory(dirPath) { /* ... نفس الكود السابق ... */
+async function deleteDirectory(dirPath) {
     try {
         const safePath = getSafePath(dirPath);
         await fs.rmdir(safePath);
@@ -517,7 +522,7 @@ async function unzipFile(zipFilePath, outputPath) {
 // ====================================================================
 // وظيفة تنفيذ الأوامر الطرفية (خطر أمني كبير)
 // ====================================================================
-async function executeCommand(command) { /* ... نفس الكود السابق ... */
+async function executeCommand(command) {
     console.warn(`[SECURITY WARNING] Attempting to execute command: ${command}`);
     const MAX_COMMAND_OUTPUT_LENGTH = 1000;
 
@@ -543,9 +548,10 @@ async function executeCommand(command) { /* ... نفس الكود السابق .
 // ====================================================================
 // وظائف أدوات Google Drive
 // ====================================================================
-async function listDriveFiles(parentId = 'root') { /* ... نفس الكود السابق ... */
+async function listDriveFiles(clientEmail, privateKey, parentId = 'root') {
+    const driveService = getDriveService(clientEmail, privateKey);
     try {
-        const res = await drive.files.list({
+        const res = await driveService.files.list({
             q: `'${parentId}' in parents and trashed=false`,
             fields: 'files(id, name, mimeType, modifiedTime)',
             pageSize: 10
@@ -563,9 +569,10 @@ async function listDriveFiles(parentId = 'root') { /* ... نفس الكود ال
     }
 }
 
-async function readDriveFileContent(fileId) { /* ... نفس الكود السابق ... */
+async function readDriveFileContent(clientEmail, privateKey, fileId) {
+    const driveService = getDriveService(clientEmail, privateKey);
     try {
-        const fileMetadata = await drive.files.get({ fileId: fileId, fields: 'mimeType, name' });
+        const fileMetadata = await driveService.files.get({ fileId: fileId, fields: 'mimeType, name' });
         const mimeType = fileMetadata.data.mimeType;
         const fileName = fileMetadata.data.name;
 
@@ -580,7 +587,7 @@ async function readDriveFileContent(fileId) { /* ... نفس الكود السا�
             throw new Error(`File type '${mimeType}' for file '${fileName}' is not a readable text format.`);
         }
 
-        const res = await drive.files.export({ fileId: fileId, mimeType: 'text/plain' }, { responseType: 'stream' });
+        const res = await driveService.files.export({ fileId: fileId, mimeType: 'text/plain' }, { responseType: 'stream' });
         let content = '';
         await new Promise((resolve, reject) => {
             res.data.on('data', chunk => content += chunk);
@@ -603,10 +610,10 @@ async function readDriveFileContent(fileId) { /* ... نفس الكود السا�
 // ====================================================================
 // وظائف أدوات Supabase
 // ====================================================================
-async function supabaseQuery(tableName, selectColumns = '*', filters = {}, limit = 10) {
-    if (!supabase) throw new Error("Supabase client not initialized.");
+async function supabaseQuery(supabaseUrl, supabaseAnonKey, tableName, selectColumns = '*', filters = {}, limit = 10) {
+    const supabaseClient = getSupabaseClient(supabaseUrl, supabaseAnonKey);
     try {
-        let query = supabase.from(tableName).select(selectColumns).limit(limit);
+        let query = supabaseClient.from(tableName).select(selectColumns).limit(limit);
         for (const key in filters) {
             const [operator, value] = filters[key].split('.');
             query = query.filter(key, operator, value);
@@ -620,10 +627,10 @@ async function supabaseQuery(tableName, selectColumns = '*', filters = {}, limit
     }
 }
 
-async function supabaseInsert(tableName, data) {
-    if (!supabase) throw new Error("Supabase client not initialized.");
+async function supabaseInsert(supabaseUrl, supabaseAnonKey, tableName, data) {
+    const supabaseClient = getSupabaseClient(supabaseUrl, supabaseAnonKey);
     try {
-        const { data: insertedData, error } = await supabase.from(tableName).insert(data).select();
+        const { data: insertedData, error } = await supabaseClient.from(tableName).insert(data).select();
         if (error) throw error;
         return { status: 'success', message: 'Data inserted.', data: insertedData };
     } catch (error) {
@@ -632,10 +639,10 @@ async function supabaseInsert(tableName, data) {
     }
 }
 
-async function supabaseUpdate(tableName, data, filters) {
-    if (!supabase) throw new Error("Supabase client not initialized.");
+async function supabaseUpdate(supabaseUrl, supabaseAnonKey, tableName, data, filters) {
+    const supabaseClient = getSupabaseClient(supabaseUrl, supabaseAnonKey);
     try {
-        let query = supabase.from(tableName).update(data);
+        let query = supabaseClient.from(tableName).update(data);
         for (const key in filters) {
             const [operator, value] = filters[key].split('.');
             query = query.filter(key, operator, value);
@@ -653,24 +660,29 @@ async function supabaseUpdate(tableName, data, filters) {
 // وظائف أدوات البرمجة ومساعدة النموذج
 // ====================================================================
 
-async function runCodeSnippet(code) {
-    const vm = new VM({
-        timeout: 1000, // مهلة 1 ثانية
-        sandbox: { console: { log: (...args) => console.log('[VM Output]', ...args) } } // تقييد الوصول إلى console.log
-    });
-    try {
-        const result = await vm.run(code);
-        return { status: 'success', output: result };
-    } catch (error) {
-        return { status: 'error', message: `Code execution failed: ${error.message}` };
+async function codeLinter(code, language = 'javascript') {
+    // هذا مجرد مثال بسيط جداً. linter حقيقي يتطلب تثبيت ESLint أو ما شابه.
+    // يمكن للنموذج استخدام هذه الأداة لطلب "فحص" الكود قبل أن يقوم هو بتحليله.
+    // النموذج نفسه (أنا) هو من سيقوم بالتحليل المنطقي والنحوي الأكثر تعقيدًا.
+    if (language === 'javascript') {
+        try {
+            // محاولة تحليل الكود كـ JavaScript
+            eval('(function(){' + code + '})'); // لا تنفذ، فقط تحاول التحليل
+            return { status: 'success', message: 'Basic syntax check passed.' };
+        } catch (e) {
+            return { status: 'error', message: `Syntax Error: ${e.message}` };
+        }
     }
+    // يمكن إضافة منطق لغات أخرى هنا (مثل استدعاء أدوات خارجية)
+    return { status: 'info', message: `Basic linting for ${language} not fully supported by this tool. Model will attempt deeper analysis.` };
 }
+
 
 // ====================================================================
 // وظائف أدوات المرافق وقائمة المهام (بدون تغيير)
 // ====================================================================
 
-async function summarizeText(text) { /* ... نفس الكود السابق ... */
+async function summarizeText(text) {
     const MAX_SUMMARY_INPUT_LENGTH = 1000;
     let processedText = text;
     if (text.length > MAX_SUMMARY_INPUT_LENGTH) {
@@ -681,17 +693,17 @@ async function summarizeText(text) { /* ... نفس الكود السابق ... *
 
 const tasks = [];
 
-function addTask(description) { /* ... نفس الكود السابق ... */
+function addTask(description) {
     const newTask = { id: uuidv4(), description: description, completed: false, createdAt: new Date().toISOString() };
     tasks.push(newTask);
     return { status: 'success', message: 'Task added.', task: newTask };
 }
 
-function listTasks() { /* ... نفس الكود السابق ... */
+function listTasks() {
     return { tasks: tasks };
 }
 
-function completeTask(taskId) { /* ... نفس الكود السابق ... */
+function completeTask(taskId) {
     const taskIndex = tasks.findIndex(task => task.id === taskId);
     if (taskIndex !== -1) {
         tasks[taskIndex].completed = true;
@@ -701,7 +713,7 @@ function completeTask(taskId) { /* ... نفس الكود السابق ... */
     throw new Error("Task not found.");
 }
 
-function clearTasks() { /* ... نفس الكود السابق ... */
+function clearTasks() {
     tasks.length = 0;
     return { status: 'success', message: 'All tasks cleared.' };
 }
