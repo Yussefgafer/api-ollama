@@ -1,14 +1,17 @@
-// server.js (وكيل خارق بمهام متقدمة - بدون jsdom)
+// server.js (وكيل خارق بمهام متقدمة جداً)
 const http = require('http');
 const axios = require('axios');
 const cheerio = require('cheerio');
-// const { JSDOM } = require('jsdom'); // <-- تم إزالة هذه المكتبة
 const { evaluate } = require('mathjs');
 const { google } = require('googleapis');
 const fs = require('fs').promises;
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { exec } = require('child_process');
+const { createClient } = require('supabase-js'); // <-- Supabase
+const archiver = require('archiver'); // <-- Zip
+const decompress = require('decompress'); // <-- Unzip
+const { VM } = require('vm2'); // <-- لتشغيل الكود بأمان نسبي
 
 const PORT = process.env.PORT || 3000;
 const DUCKDUCKGO_API = 'https://api.duckduckgo.com/?format=json&no_html=1&no_redirect=1';
@@ -25,12 +28,26 @@ if (GOOGLE_CLIENT_EMAIL && GOOGLE_PRIVATE_KEY) {
         GOOGLE_CLIENT_EMAIL,
         null,
         GOOGLE_PRIVATE_KEY,
-        ['https://www.googleapis.com/auth/drive']
+        ['https://www.googleapis.com/auth/drive'] // أذونات كاملة لـ Drive
     );
     drive = google.drive({ version: 'v3', auth });
     console.log('Google Drive API initialized.');
 } else {
     console.warn('Google Drive API credentials not found. Drive tools will not be available.');
+}
+
+// ====================================================================
+// تهيئة Supabase Client
+// ====================================================================
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+
+let supabase;
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+    supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    console.log('Supabase client initialized.');
+} else {
+    console.warn('Supabase credentials not found. Supabase tools will not be available.');
 }
 
 // ====================================================================
@@ -70,11 +87,21 @@ async function handleRpcRequest(req, res) {
                             { name: 'delete_file', description: 'Delete a file at a given path. Use with extreme caution!', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the file to delete.' } }, required: ['path'] } },
                             { name: 'create_directory', description: 'Create a new directory at a given path.', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the new directory.' } }, required: ['path'] } },
                             { name: 'delete_directory', description: 'Delete an empty directory at a given path. Use with caution!', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the directory to delete.' } }, required: ['path'] } },
+                            // أدوات ضغط وفك ضغط الملفات
+                            { name: 'zip_folder', description: 'Compresses a folder into a .zip archive.', inputSchema: { type: 'object", properties: { folderPath: { type: 'string', description: 'The path to the folder to compress.' }, outputPath: { type: 'string', description: 'The path for the output .zip file (e.g., "archive.zip").' } }, required: ['folderPath', 'outputPath'] } },
+                            { name: 'unzip_file', description: 'Decompresses a .zip archive to a target directory.', inputSchema: { type: 'object", properties: { zipFilePath: { type: 'string', description: 'The path to the .zip file.' }, outputPath: { type: 'string', description: 'The path to the directory where contents will be extracted.' } }, required: ['zipFilePath', 'outputPath'] } },
                             // أدوات Google Drive
                             { name: 'list_drive_files', description: 'List files and folders in Google Drive. Can specify a parent folder ID.', inputSchema: { type: 'object", properties: { parentId: { type: 'string', description: 'Optional: The ID of the parent folder to list from. Default is root.' } } } },
                             { name: 'read_drive_file_content', description: 'Read the plain text content of a Google Drive file by its ID. Only works for text-based files (e.g., .txt, .md, Google Docs).', inputSchema: { type: 'object", properties: { fileId: { type: 'string', description: 'The ID of the Google Drive file to read.' } }, required: ['fileId'] } },
+                            // أدوات Supabase
+                            { name: 'supabase_query', description: 'Execute a SQL SELECT query on a Supabase table. Returns data as JSON.', inputSchema: { type: 'object", properties: { tableName: { type: 'string', description: 'The name of the table to query.' }, selectColumns: { type: 'string', description: 'Optional: Comma-separated columns to select (e.g., "id,name"). Default is "*".' }, filters: { type: 'object", description: 'Optional: JSON object for filters (e.g., { "column": "eq.value" }).' }, limit: { type: 'number", description: 'Optional: Max number of rows to return. Default is 10.' } }, required: ['tableName'] } },
+                            { name: 'supabase_insert', description: 'Insert data into a Supabase table.', inputSchema: { type: 'object", properties: { tableName: { type: 'string', description: 'The name of the table to insert into.' }, data: { type: 'object", description: 'JSON object representing the row to insert (e.g., { "name": "test" }).' } }, required: ['tableName', 'data'] } },
+                            { name: 'supabase_update', description: 'Update data in a Supabase table based on a filter.', inputSchema: { type: 'object", properties: { tableName: { type: 'string', description: 'The name of the table to update.' }, data: { type: 'object", description: 'JSON object representing the data to update (e.g., { "status": "completed" }).' }, filters: { type: 'object", description: 'JSON object for filters (e.g., { "id": "eq.123" }).' } }, required: ['tableName', 'data', 'filters'] } },
                             // أداة تنفيذ الأوامر الطرفية (خطر أمني)
                             { name: 'execute_command', description: 'Execute a shell command on the server. DANGEROUS! Use ONLY for trusted, essential operations. Output is limited.', inputSchema: { type: 'object", properties: { command: { type: 'string', description: 'The shell command to execute.' } }, required: ['command'] } },
+                            // أدوات البرمجة ومساعدة النموذج
+                            { name: 'run_code_snippet', description: 'Execute a JavaScript code snippet in a sandboxed environment. Returns output or error.', inputSchema: { type: 'object", properties: { code: { type: 'string', description: 'The JavaScript code to execute.' } }, required: ['code'] } },
+                            { name: 'generate_uuid', description: 'Generate a universally unique identifier (UUID). Useful for creating unique IDs for tasks, files, etc.', inputSchema: { type: 'object", properties: {} } },
                             // أدوات المرافق
                             { name: 'summarize_text', description: 'Summarize a long piece of text. Useful when you have too much information and need to extract key points.', inputSchema: { type: 'object", properties: { text: { type: 'string', description: 'The text to summarize.' } }, required: ['text'] } },
                             { name: 'get_current_time', description: 'Get the current date and time. Useful when you need up-to-date time information.', inputSchema: { type: 'object", properties: {} } },
@@ -94,7 +121,7 @@ async function handleRpcRequest(req, res) {
                             serverInfo: {
                                 name: "Super Agent Advanced Tools Server",
                                 version: "1.0.0",
-                                notes: "Provides advanced web, file, terminal, and utility tools for AI agents."
+                                notes: "Provides advanced web, file, terminal, Supabase, and programming tools for AI agents."
                             },
                             capabilities: capabilities
                         }
@@ -110,66 +137,104 @@ async function handleRpcRequest(req, res) {
                     console.log(`[Tool Call] طلب تنفيذ أداة: ${toolName}`);
 
                     switch (toolName) {
-                        case 'search_web': /* ... نفس الكود السابق ... */
+                        // أدوات الويب والبحث
+                        case 'search_web':
                             if (!args || !args.query) { throw new Error("Query is missing for search_web."); }
                             toolResult = await searchDuckDuckGo(args.query);
                             break;
-                        case 'deep_search_web': /* ... نفس الكود السابق ... */
+                        case 'deep_search_web':
                             if (!args || !args.query) { throw new Error("Query is missing for deep_search_web."); }
                             toolResult = await deepSearchWeb(args.query);
                             break;
-                        case 'browse_url': /* ... نفس الكود السابق ... */
+                        case 'browse_url':
                             if (!args || !args.url) { throw new Error("URL is missing for browse_url."); }
                             toolResult = await browseUrl(args.url);
                             break;
-                        case 'list_directory': /* ... نفس الكود السابق ... */
+                        // أدوات الملفات المحلية (على الخادم)
+                        case 'list_directory':
                             toolResult = await listDirectory(args ? args.path : './');
                             break;
-                        case 'create_file': /* ... نفس الكود السابق ... */
+                        case 'create_file':
                             if (!args || !args.path || args.content === undefined) { throw new Error("Path and content are required for create_file."); }
                             toolResult = await createFile(args.path, args.content);
                             break;
-                        case 'read_file': /* ... نفس الكود السابق ... */
+                        case 'read_file':
                             if (!args || !args.path) { throw new Error("Path is required for read_file."); }
                             toolResult = await readFile(args.path);
                             break;
-                        case 'update_file': /* ... نفس الكود السابق ... */
+                        case 'update_file':
                             if (!args || !args.path || args.content === undefined) { throw new Error("Path and content are required for update_file."); }
                             toolResult = await updateFile(args.path, args.content);
                             break;
-                        case 'delete_file': /* ... نفس الكود السابق ... */
+                        case 'delete_file':
                             if (!args || !args.path) { throw new Error("Path is required for delete_file."); }
                             toolResult = await deleteFile(args.path);
                             break;
-                        case 'create_directory': /* ... نفس الكود السابق ... */
+                        case 'create_directory':
                             if (!args || !args.path) { throw new Error("Path is required for create_directory."); }
                             toolResult = await createDirectory(args.path);
                             break;
-                        case 'delete_directory': /* ... نفس الكود السابق ... */
+                        case 'delete_directory':
                             if (!args || !args.path) { throw new Error("Path is required for delete_directory."); }
                             toolResult = await deleteDirectory(args.path);
                             break;
-                        case 'list_drive_files': /* ... نفس الكود السابق ... */
+                        // أدوات ضغط وفك ضغط الملفات
+                        case 'zip_folder':
+                            if (!args || !args.folderPath || !args.outputPath) { throw new Error("folderPath and outputPath are required for zip_folder."); }
+                            toolResult = await zipFolder(args.folderPath, args.outputPath);
+                            break;
+                        case 'unzip_file':
+                            if (!args || !args.zipFilePath || !args.outputPath) { throw new Error("zipFilePath and outputPath are required for unzip_file."); }
+                            toolResult = await unzipFile(args.zipFilePath, args.outputPath);
+                            break;
+                        // أدوات Google Drive
+                        case 'list_drive_files':
                             if (!drive) throw new Error("Google Drive API not initialized.");
                             toolResult = await listDriveFiles(args ? args.parentId : null);
                             break;
-                        case 'read_drive_file_content': /* ... نفس الكود السابق ... */
+                        case 'read_drive_file_content':
                             if (!drive) throw new Error("Google Drive API not initialized.");
                             if (!args || !args.fileId) { throw new Error("File ID is missing for read_drive_file_content."); }
                             toolResult = await readDriveFileContent(args.fileId);
                             break;
-                        case 'execute_command': /* ... نفس الكود السابق ... */
+                        // أدوات Supabase
+                        case 'supabase_query':
+                            if (!supabase) throw new Error("Supabase client not initialized.");
+                            if (!args || !args.tableName) { throw new Error("tableName is required for supabase_query."); }
+                            toolResult = await supabaseQuery(args.tableName, args.selectColumns, args.filters, args.limit);
+                            break;
+                        case 'supabase_insert':
+                            if (!supabase) throw new Error("Supabase client not initialized.");
+                            if (!args || !args.tableName || !args.data) { throw new Error("tableName and data are required for supabase_insert."); }
+                            toolResult = await supabaseInsert(args.tableName, args.data);
+                            break;
+                        case 'supabase_update':
+                            if (!supabase) throw new Error("Supabase client not initialized.");
+                            if (!args || !args.tableName || !args.data || !args.filters) { throw new Error("tableName, data, and filters are required for supabase_update."); }
+                            toolResult = await supabaseUpdate(args.tableName, args.data, args.filters);
+                            break;
+                        // أداة تنفيذ الأوامر الطرفية
+                        case 'execute_command':
                             if (!args || !args.command) { throw new Error("Command is missing for execute_command."); }
                             toolResult = await executeCommand(args.command);
                             break;
-                        case 'summarize_text': /* ... نفس الكود السابق ... */
+                        // أدوات البرمجة ومساعدة النموذج
+                        case 'run_code_snippet':
+                            if (!args || !args.code) { throw new Error("Code is missing for run_code_snippet."); }
+                            toolResult = await runCodeSnippet(args.code);
+                            break;
+                        case 'generate_uuid':
+                            toolResult = { uuid: uuidv4() };
+                            break;
+                        // أدوات المرافق
+                        case 'summarize_text':
                             if (!args || !args.text) { throw new Error("Text is missing for summarize_text."); }
                             toolResult = await summarizeText(args.text);
                             break;
-                        case 'get_current_time': /* ... نفس الكود السابق ... */
+                        case 'get_current_time':
                             toolResult = { currentTime: new Date().toISOString() };
                             break;
-                        case 'perform_calculation': /* ... نفس الكود السابق ... */
+                        case 'perform_calculation':
                             if (!args || !args.expression) { throw new Error("Expression is missing for perform_calculation."); }
                             try {
                                 const result = evaluate(args.expression);
@@ -178,18 +243,19 @@ async function handleRpcRequest(req, res) {
                                 throw new Error(`Invalid expression: ${e.message}`);
                             }
                             break;
-                        case 'add_task': /* ... نفس الكود السابق ... */
+                        // أدوات قائمة المهام
+                        case 'add_task':
                             if (!args || !args.description) { throw new Error("Description is required for add_task."); }
                             toolResult = addTask(args.description);
                             break;
-                        case 'list_tasks': /* ... نفس الكود السابق ... */
+                        case 'list_tasks':
                             toolResult = listTasks();
                             break;
-                        case 'complete_task': /* ... نفس الكود السابق ... */
+                        case 'complete_task':
                             if (!args || !args.taskId) { throw new Error("Task ID is required for complete_task."); }
                             toolResult = completeTask(args.taskId);
                             break;
-                        case 'clear_tasks': /* ... نفس الكود السابق ... */
+                        case 'clear_tasks':
                             toolResult = clearTasks();
                             break;
                         default:
@@ -236,7 +302,7 @@ async function handleRpcRequest(req, res) {
 // وظائف أدوات الويب والبحث
 // ====================================================================
 
-function searchDuckDuckGo(query) {
+function searchDuckDuckGo(query) { /* ... نفس الكود السابق ... */
     return new Promise((resolve, reject) => {
         const searchUrl = `${DUCKDUCKGO_API}&q=${encodeURIComponent(query)}`;
         https.get(searchUrl, {
@@ -261,7 +327,7 @@ function searchDuckDuckGo(query) {
     });
 }
 
-async function deepSearchWeb(query) {
+async function deepSearchWeb(query) { /* ... نفس الكود السابق ... */
     try {
         const searchUrl = `${DUCKDUCKGO_API}&q=${encodeURIComponent(query)}`;
         const response = await axios.get(searchUrl, {
@@ -291,7 +357,7 @@ async function deepSearchWeb(query) {
     }
 }
 
-async function browseUrl(url) {
+async function browseUrl(url) { /* ... نفس الكود السابق ... */
     try {
         const response = await axios.get(url, {
             headers: { 'User-Agent': 'SuperAgent-MCP-Browser/1.0' }
@@ -328,7 +394,7 @@ function getSafePath(inputPath) {
     return resolvedPath;
 }
 
-async function listDirectory(dirPath = './') {
+async function listDirectory(dirPath = './') { /* ... نفس الكود السابق ... */
     try {
         const safePath = getSafePath(dirPath);
         const entries = await fs.readdir(safePath, { withFileTypes: true });
@@ -343,7 +409,7 @@ async function listDirectory(dirPath = './') {
     }
 }
 
-async function createFile(filePath, content) {
+async function createFile(filePath, content) { /* ... نفس الكود السابق ... */
     try {
         const safePath = getSafePath(filePath);
         await fs.writeFile(safePath, content, 'utf8');
@@ -354,7 +420,7 @@ async function createFile(filePath, content) {
     }
 }
 
-async function readFile(filePath) {
+async function readFile(filePath) { /* ... نفس الكود السابق ... */
     try {
         const safePath = getSafePath(filePath);
         const content = await fs.readFile(safePath, 'utf8');
@@ -368,7 +434,7 @@ async function readFile(filePath) {
     }
 }
 
-async function updateFile(filePath, content) {
+async function updateFile(filePath, content) { /* ... نفس الكود السابق ... */
     try {
         const safePath = getSafePath(filePath);
         await fs.writeFile(safePath, content, 'utf8');
@@ -379,7 +445,7 @@ async function updateFile(filePath, content) {
     }
 }
 
-async function deleteFile(filePath) {
+async function deleteFile(filePath) { /* ... نفس الكود السابق ... */
     try {
         const safePath = getSafePath(filePath);
         await fs.unlink(safePath);
@@ -390,7 +456,7 @@ async function deleteFile(filePath) {
     }
 }
 
-async function createDirectory(dirPath) {
+async function createDirectory(dirPath) { /* ... نفس الكود السابق ... */
     try {
         const safePath = getSafePath(dirPath);
         await fs.mkdir(safePath, { recursive: true });
@@ -401,7 +467,7 @@ async function createDirectory(dirPath) {
     }
 }
 
-async function deleteDirectory(dirPath) {
+async function deleteDirectory(dirPath) { /* ... نفس الكود السابق ... */
     try {
         const safePath = getSafePath(dirPath);
         await fs.rmdir(safePath);
@@ -413,9 +479,45 @@ async function deleteDirectory(dirPath) {
 }
 
 // ====================================================================
+// وظائف أدوات ضغط وفك ضغط الملفات
+// ====================================================================
+async function zipFolder(folderPath, outputPath) {
+    const archive = archiver('zip', { zlib: { level: 9 } }); // مستوى ضغط
+    const output = fs.createWriteStream(getSafePath(outputPath));
+
+    return new Promise((resolve, reject) => {
+        output.on('close', () => {
+            console.log(`Archiver has finalized ${archive.pointer()} total bytes`);
+            resolve({ status: 'success', message: `Folder '${folderPath}' zipped to '${outputPath}'.` });
+        });
+        archive.on('error', (err) => reject(err));
+
+        archive.pipe(output);
+        archive.directory(getSafePath(folderPath), false); // false يعني لا تتضمن المجلد الجذر في الأرشيف
+        archive.finalize();
+    }).catch(error => {
+        console.error(`Error zipping folder ${folderPath}: ${error.message}`);
+        throw new Error(`Failed to zip folder: ${error.message}`);
+    });
+}
+
+async function unzipFile(zipFilePath, outputPath) {
+    try {
+        const safeZipPath = getSafePath(zipFilePath);
+        const safeOutputPath = getSafePath(outputPath);
+        await fs.mkdir(safeOutputPath, { recursive: true }); // تأكد من وجود مجلد الإخراج
+        await decompress(safeZipPath, safeOutputPath);
+        return { status: 'success', message: `File '${zipFilePath}' unzipped to '${outputPath}'.` };
+    } catch (error) {
+        console.error(`Error unzipping file ${zipFilePath}: ${error.message}`);
+        throw new Error(`Failed to unzip file: ${error.message}`);
+    }
+}
+
+// ====================================================================
 // وظيفة تنفيذ الأوامر الطرفية (خطر أمني كبير)
 // ====================================================================
-async function executeCommand(command) {
+async function executeCommand(command) { /* ... نفس الكود السابق ... */
     console.warn(`[SECURITY WARNING] Attempting to execute command: ${command}`);
     const MAX_COMMAND_OUTPUT_LENGTH = 1000;
 
@@ -441,7 +543,7 @@ async function executeCommand(command) {
 // ====================================================================
 // وظائف أدوات Google Drive
 // ====================================================================
-async function listDriveFiles(parentId = 'root') {
+async function listDriveFiles(parentId = 'root') { /* ... نفس الكود السابق ... */
     try {
         const res = await drive.files.list({
             q: `'${parentId}' in parents and trashed=false`,
@@ -461,7 +563,7 @@ async function listDriveFiles(parentId = 'root') {
     }
 }
 
-async function readDriveFileContent(fileId) {
+async function readDriveFileContent(fileId) { /* ... نفس الكود السابق ... */
     try {
         const fileMetadata = await drive.files.get({ fileId: fileId, fields: 'mimeType, name' });
         const mimeType = fileMetadata.data.mimeType;
@@ -499,10 +601,76 @@ async function readDriveFileContent(fileId) {
 }
 
 // ====================================================================
-// وظائف أدوات المرافق وقائمة المهام
+// وظائف أدوات Supabase
+// ====================================================================
+async function supabaseQuery(tableName, selectColumns = '*', filters = {}, limit = 10) {
+    if (!supabase) throw new Error("Supabase client not initialized.");
+    try {
+        let query = supabase.from(tableName).select(selectColumns).limit(limit);
+        for (const key in filters) {
+            const [operator, value] = filters[key].split('.');
+            query = query.filter(key, operator, value);
+        }
+        const { data, error } = await query;
+        if (error) throw error;
+        return { status: 'success', data: data };
+    } catch (error) {
+        console.error(`Error querying Supabase table ${tableName}: ${error.message}`);
+        throw new Error(`Supabase query failed: ${error.message}`);
+    }
+}
+
+async function supabaseInsert(tableName, data) {
+    if (!supabase) throw new Error("Supabase client not initialized.");
+    try {
+        const { data: insertedData, error } = await supabase.from(tableName).insert(data).select();
+        if (error) throw error;
+        return { status: 'success', message: 'Data inserted.', data: insertedData };
+    } catch (error) {
+        console.error(`Error inserting into Supabase table ${tableName}: ${error.message}`);
+        throw new Error(`Supabase insert failed: ${error.message}`);
+    }
+}
+
+async function supabaseUpdate(tableName, data, filters) {
+    if (!supabase) throw new Error("Supabase client not initialized.");
+    try {
+        let query = supabase.from(tableName).update(data);
+        for (const key in filters) {
+            const [operator, value] = filters[key].split('.');
+            query = query.filter(key, operator, value);
+        }
+        const { data: updatedData, error } = await query.select();
+        if (error) throw error;
+        return { status: 'success', message: 'Data updated.', data: updatedData };
+    } catch (error) {
+        console.error(`Error updating Supabase table ${tableName}: ${error.message}`);
+        throw new Error(`Supabase update failed: ${error.message}`);
+    }
+}
+
+// ====================================================================
+// وظائف أدوات البرمجة ومساعدة النموذج
 // ====================================================================
 
-async function summarizeText(text) {
+async function runCodeSnippet(code) {
+    const vm = new VM({
+        timeout: 1000, // مهلة 1 ثانية
+        sandbox: { console: { log: (...args) => console.log('[VM Output]', ...args) } } // تقييد الوصول إلى console.log
+    });
+    try {
+        const result = await vm.run(code);
+        return { status: 'success', output: result };
+    } catch (error) {
+        return { status: 'error', message: `Code execution failed: ${error.message}` };
+    }
+}
+
+// ====================================================================
+// وظائف أدوات المرافق وقائمة المهام (بدون تغيير)
+// ====================================================================
+
+async function summarizeText(text) { /* ... نفس الكود السابق ... */
     const MAX_SUMMARY_INPUT_LENGTH = 1000;
     let processedText = text;
     if (text.length > MAX_SUMMARY_INPUT_LENGTH) {
@@ -511,24 +679,19 @@ async function summarizeText(text) {
     return { originalLength: text.length, processedLength: processedText.length, textForSummary: processedText };
 }
 
-const tasks = []; // قائمة بسيطة لتخزين المهام
+const tasks = [];
 
-function addTask(description) {
-    const newTask = {
-        id: uuidv4(),
-        description: description,
-        completed: false,
-        createdAt: new Date().toISOString()
-    };
+function addTask(description) { /* ... نفس الكود السابق ... */
+    const newTask = { id: uuidv4(), description: description, completed: false, createdAt: new Date().toISOString() };
     tasks.push(newTask);
     return { status: 'success', message: 'Task added.', task: newTask };
 }
 
-function listTasks() {
+function listTasks() { /* ... نفس الكود السابق ... */
     return { tasks: tasks };
 }
 
-function completeTask(taskId) {
+function completeTask(taskId) { /* ... نفس الكود السابق ... */
     const taskIndex = tasks.findIndex(task => task.id === taskId);
     if (taskIndex !== -1) {
         tasks[taskIndex].completed = true;
@@ -538,7 +701,7 @@ function completeTask(taskId) {
     throw new Error("Task not found.");
 }
 
-function clearTasks() {
+function clearTasks() { /* ... نفس الكود السابق ... */
     tasks.length = 0;
     return { status: 'success', message: 'All tasks cleared.' };
 }
