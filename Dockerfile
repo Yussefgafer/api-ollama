@@ -1,33 +1,18 @@
-# Dockerfile (النسخة النهائية القوية)
+# الخطوة 1: استخدم صورة Python رسمية كأساس
+FROM python:3.10-slim
 
-# 1. استخدم صورة Node.js كاملة (مبنية على Debian) كنقطة بداية
-FROM node:20-bookworm
-
-# 2. قم بتثبيت أدوات البناء الأساسية التي قد تحتاجها بعض حزم npm
-#    - python3, make, g++ هي الأدوات الأكثر شيوعًا
-#    - يتم تحديث قائمة الحزم أولاً لضمان الحصول على أحدث الإصدارات
-RUN apt-get update && apt-get install -y \
-    python3 \
-    make \
-    g++ \
-    --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/*
-
-# 3. تعيين دليل العمل داخل الحاوية
+# الخطوة 2: تعيين مجلد العمل داخل الحاوية
 WORKDIR /app
 
-# 4. نسخ ملفات package.json للاستفادة من التخزين المؤقت لـ Docker
-COPY package*.json ./
+# الخطوة 3: تثبيت الأدوات اللازمة (ffmpeg)
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
-# 5. تثبيت تبعيات Node.js
-#    الآن يجب أن ينجح هذا الأمر لأن أدوات البناء موجودة
-RUN npm install --omit=dev
+# الخطوة 4: نسخ ملف الاعتماديات وتثبيتها
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 6. نسخ باقي كود التطبيق
-COPY . .
+# الخطوة 5: نسخ كود البوت إلى مجلد العمل
+COPY main.py .
 
-# 7. تعيين المنفذ
-EXPOSE 3000
-
-# 8. الأمر الافتراضي لبدء التشغيل
-CMD [ "npm", "start" ]
+# الخطوة 6: تحديد الأمر لتشغيل البوت بشكل دائم
+CMD ["python", "main.py"]
