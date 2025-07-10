@@ -8,18 +8,17 @@ from telegram.constants import ParseMode
 import asyncio # لاستخدام sleep في حالة الخطأ
 
 # ------------------------------------------------------------------
-# ⚠️ إعدادات البوت - ضع معلوماتك هنا مباشرة بناءً على طلبك ⚠️
+# ⚠️ إعدادات البوت - تم تحديثها بالتوكن والـ ID الجديدين ⚠️
 # ------------------------------------------------------------------
-# تحذير: لا تشارك هذا الكود مع أي شخص إذا كان يحتوي على التوكن!
-TELEGRAM_BOT_TOKEN = "7322598673:AAHLPboj2lG4qNB7DiSdUG7YT_v_kuuYkc8"
+# تحذير: لا تشارك هذا الكود إذا كان المستودع عامًا!
+TELEGRAM_BOT_TOKEN = "7959473244:AAFtDfPzND8kbdcp6qLVfA6SPWvWsRSit3o"
 
-# هام جدًا: يجب أن تحصل على معرّف المجموعة الرقمي.
-# استبدل 0 بالمعرّف الصحيح بعد الحصول عليه. (مثال: -1001234567890)
-TARGET_CHAT_ID = 0
+# هذا هو معرف المجموعة الذي قدمته. تم تحويله إلى رقم صحيح.
+TARGET_CHAT_ID = -1002707790272
 # ------------------------------------------------------------------
 
 
-# إعداد سجلات (logs) لمتابعة ما يفعله البوت على Koyeb
+# إعداد سجلات (logs) لمتابعة ما يفعله البوت على Railway
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -46,9 +45,6 @@ def download_tiktok_video(url: str):
     os.makedirs(TEMP_DOWNLOAD_DIR, exist_ok=True)
     
     # إعدادات yt-dlp
-    # 'nooverwrites': لا تعيد تنزيل الملف إذا كان موجودًا
-    # 'noplaylist': لا تحاول تنزيل قوائم التشغيل
-    # 'writedescription': لكتابة الوصف (اختياري)
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, '%(id)s.%(ext)s'),
@@ -70,9 +66,6 @@ def download_tiktok_video(url: str):
             ydl.download([url])
             
             # الحصول على مسار الملف بعد التنزيل
-            # قد يكون info_dict['_format_note'] أو info_dict['requested_downloads'][0]['filepath']
-            # ولكن الطريقة الأكثر موثوقية هي استنتاج المسار من info_dict['id'] و info_dict['ext']
-            # أو استخدام prepare_filename بعد التنزيل
             file_path = ydl.prepare_filename(info_dict)
             
             if os.path.exists(file_path):
@@ -97,8 +90,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # التحقق مما إذا كانت الرسالة من المجموعة المستهدفة
     # نستخدم int() للتأكد من أننا نقارن أرقامًا
-    # إذا كان TARGET_CHAT_ID لا يزال 0، فهذا يعني أننا في وضع الكشف عن الـ ID
-    if TARGET_CHAT_ID != 0 and chat_id != int(TARGET_CHAT_ID):
+    if chat_id != int(TARGET_CHAT_ID):
         logger.warning(f"تم تجاهل الرسالة من دردشة غير مستهدفة: {chat_id}")
         return
 
@@ -183,24 +175,16 @@ def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
         raise ValueError("لم يتم العثور على توكن البوت! يرجى تعيينه في الكود.")
     
-    if TARGET_CHAT_ID == 0:
-        logger.warning("=================================================================")
-        logger.warning("⚠️ تنبيه: لم يتم تعيين TARGET_CHAT_ID بعد! ⚠️")
-        logger.warning("البوت سيستجيب في أي مجموعة تتم إضافته إليها.")
-        logger.warning("للحصول على الـ ID: أضف البوت إلى مجموعتك، أرسل أي رسالة،")
-        logger.warning("ثم انسخ الـ ID من سجلات Koyeb (Logs) وضعه في الكود وأعد النشر.")
-        logger.warning("=================================================================")
+    # لا حاجة لتنبيه TARGET_CHAT_ID == 0 بعد الآن، لأنه تم تعيينه
+    logger.info("تم تعيين TARGET_CHAT_ID: %s", TARGET_CHAT_ID)
 
     # إنشاء التطبيق
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # إضافة معالج للرسائل النصية والصور (التي قد تحتوي على روابط في التعليق)
-    # filters.TEXT: لمعالجة الرسائل النصية
-    # ~filters.COMMAND: لتجاهل الأوامر مثل /start
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("البوت بدأ التشغيل... ينتظر الرسائل...")
-    # تشغيل البوت حتى يتم إيقافه يدويًا
     application.run_polling(poll_interval=1, timeout=30, read_timeout=30, connect_timeout=30) # زيادة المهلة
     logger.info("البوت توقف عن العمل.")
 
