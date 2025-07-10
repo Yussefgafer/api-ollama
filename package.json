@@ -1,7 +1,7 @@
 {
   "name": "super-agent-mcp-server",
-  "version": "1.0.0",
-  "description": "MCP server for RikkaHub with web browsing and utility tools.",
+  "version": "1.1.0",
+  "description": "MCP server for RikkaHub with advanced web, file, terminal, and utility tools.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,7 +10,9 @@
     "axios": "^1.7.2",
     "cheerio": "^1.0.0-rc.12",
     "jsdom": "^24.1.0",
-    "mathjs": "^12.4.2"
+    "mathjs": "^12.4.2",
+    "googleapis": "^137.0.0",
+    "uuid": "^9.0.1" // <-- إضافة هذه المكتبة
   },
   "engines": {
     "node": ">=18.0.0"
@@ -20,7 +22,9 @@
     "rikkahub",
     "ai",
     "tools",
-    "web-agent"
+    "web-agent",
+    "file-management",
+    "terminal"
   ],
   "author": "Your Name",
   "license": "MIT"
