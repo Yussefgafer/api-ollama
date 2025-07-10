@@ -1,15 +1,14 @@
-// server.js (وكيل خارق بمهام متقدمة)
+// server.js (وكيل خارق بمهام متقدمة - بدون jsdom)
 const http = require('http');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { JSDOM } = require('jsdom');
+// const { JSDOM } = require('jsdom'); // <-- تم إزالة هذه المكتبة
 const { evaluate } = require('mathjs');
 const { google } = require('googleapis');
-const fs = require('fs').promises; // استخدام نسخة الوعود (Promises) من fs
+const fs = require('fs').promises;
 const path = require('path');
-const { v4: uuidv4 } = require('uuid'); // لتوليد معرفات فريدة
-
-const { exec } = require('child_process'); // لتشغيل أوامر الطرفية
+const { v4: uuidv4 } = require('uuid');
+const { exec } = require('child_process');
 
 const PORT = process.env.PORT || 3000;
 const DUCKDUCKGO_API = 'https://api.duckduckgo.com/?format=json&no_html=1&no_redirect=1';
@@ -26,7 +25,7 @@ if (GOOGLE_CLIENT_EMAIL && GOOGLE_PRIVATE_KEY) {
         GOOGLE_CLIENT_EMAIL,
         null,
         GOOGLE_PRIVATE_KEY,
-        ['https://www.googleapis.com/auth/drive'] // أذونات كاملة لـ Drive
+        ['https://www.googleapis.com/auth/drive']
     );
     drive = google.drive({ version: 'v3', auth });
     console.log('Google Drive API initialized.');
@@ -35,19 +34,16 @@ if (GOOGLE_CLIENT_EMAIL && GOOGLE_PRIVATE_KEY) {
 }
 
 // ====================================================================
-// تخزين المهام (لأداة قائمة المهام)
+// تخزين المهام
 // ====================================================================
-const tasks = []; // قائمة بسيطة لتخزين المهام
+const tasks = [];
 
 // ====================================================================
 // دالة لمعالجة جميع طلبات JSON-RPC الواردة
 // ====================================================================
 async function handleRpcRequest(req, res) {
     let body = '';
-    req.on('data', chunk => {
-        body += chunk.toString();
-    });
-
+    req.on('data', chunk => { body += chunk.toString(); });
     req.on('end', async () => {
         let rpcRequest;
         try {
@@ -63,111 +59,31 @@ async function handleRpcRequest(req, res) {
                     const capabilities = {
                         tools: [
                             // أدوات الويب والبحث
-                            {
-                                name: 'search_web',
-                                description: 'Search the web for general information using DuckDuckGo. Use this first to get a broad overview.',
-                                inputSchema: { type: 'object", properties: { query: { type: 'string', description: 'The search query.' } }, required: ['query'] }
-                            },
-                             {
-                                name: 'deep_search_web',
-                                description: 'Perform a more in-depth web search and extract rich snippets. Useful when a simple search_web is not enough.',
-                                inputSchema: { type: 'object", properties: { query: { type: 'string', description: 'The search query for deep search.' } }, required: ['query'] }
-                            },
-                            {
-                                name: 'browse_url',
-                                description: 'Visit a specific URL and extract its main text content. Use this to get detailed information from a webpage after a search.',
-                                inputSchema: { type: 'object", properties: { url: { type: 'string', description: 'The full URL to browse.' } }, required: ['url'] }
-                            },
+                            { name: 'search_web', description: 'Search the web for general information using DuckDuckGo. Use this first to get a broad overview.', inputSchema: { type: 'object", properties: { query: { type: 'string', description: 'The search query.' } }, required: ['query'] } },
+                            { name: 'deep_search_web', description: 'Perform a more in-depth web search and extract rich snippets. Useful when a simple search_web is not enough.', inputSchema: { type: 'object", properties: { query: { type: 'string', description: 'The search query for deep search.' } }, required: ['query'] } },
+                            { name: 'browse_url', description: 'Visit a specific URL and extract its main text content. Use this to get detailed information from a webpage after a search.', inputSchema: { type: 'object", properties: { url: { type: 'string', description: 'The full URL to browse.' } }, required: ['url'] } },
                             // أدوات الملفات المحلية (على الخادم)
-                            {
-                                name: 'list_directory',
-                                description: 'List all files and subdirectories in a specified path on the server. Default is current directory.',
-                                inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'Optional: The path to list. Default is current directory (./).' } } }
-                            },
-                            {
-                                name: 'create_file',
-                                description: 'Create a new file with specified content at a given path.',
-                                inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the new file.' }, content: { type: 'string', description: 'The content to write to the file.' } }, required: ['path', 'content'] }
-                            },
-                            {
-                                name: 'read_file',
-                                description: 'Read the plain text content of a file at a given path.',
-                                inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the file.' } }, required: ['path'] }
-                            },
-                            {
-                                name: 'update_file',
-                                description: 'Update (overwrite) the content of an existing file at a given path.',
-                                inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the file to update.' }, content: { type: 'string', description: 'The new content to write to the file.' } }, required: ['path', 'content'] }
-                            },
-                            {
-                                name: 'delete_file',
-                                description: 'Delete a file at a given path. Use with extreme caution!',
-                                inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the file to delete.' } }, required: ['path'] }
-                            },
-                            {
-                                name: 'create_directory',
-                                description: 'Create a new directory at a given path.',
-                                inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the new directory.' } }, required: ['path'] }
-                            },
-                            {
-                                name: 'delete_directory',
-                                description: 'Delete an empty directory at a given path. Use with caution!',
-                                inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the directory to delete.' } }, required: ['path'] }
-                            },
+                            { name: 'list_directory', description: 'List all files and subdirectories in a specified path on the server. Default is current directory.', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'Optional: The path to list. Default is current directory (./).' } } } },
+                            { name: 'create_file', description: 'Create a new file with specified content at a given path.', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the new file.' }, content: { type: 'string', description: 'The content to write to the file.' } }, required: ['path', 'content'] } },
+                            { name: 'read_file', description: 'Read the plain text content of a file at a given path.', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the file.' } }, required: ['path'] } },
+                            { name: 'update_file', description: 'Update (overwrite) the content of an existing file at a given path.', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the file to update.' }, content: { type: 'string', description: 'The new content to write to the file.' } }, required: ['path', 'content'] } },
+                            { name: 'delete_file', description: 'Delete a file at a given path. Use with extreme caution!', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the file to delete.' } }, required: ['path'] } },
+                            { name: 'create_directory', description: 'Create a new directory at a given path.', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the new directory.' } }, required: ['path'] } },
+                            { name: 'delete_directory', description: 'Delete an empty directory at a given path. Use with caution!', inputSchema: { type: 'object", properties: { path: { type: 'string', description: 'The path to the directory to delete.' } }, required: ['path'] } },
                             // أدوات Google Drive
-                            {
-                                name: 'list_drive_files',
-                                description: 'List files and folders in Google Drive. Can specify a parent folder ID.',
-                                inputSchema: { type: 'object", properties: { parentId: { type: 'string', description: 'Optional: The ID of the parent folder to list from. Default is root.' } } }
-                            },
-                            {
-                                name: 'read_drive_file_content',
-                                description: 'Read the plain text content of a Google Drive file by its ID. Only works for text-based files (e.g., .txt, .md, Google Docs).',
-                                inputSchema: { type: 'object", properties: { fileId: { type: 'string', description: 'The ID of the Google Drive file to read.' } }, required: ['fileId'] }
-                            },
+                            { name: 'list_drive_files', description: 'List files and folders in Google Drive. Can specify a parent folder ID.', inputSchema: { type: 'object", properties: { parentId: { type: 'string', description: 'Optional: The ID of the parent folder to list from. Default is root.' } } } },
+                            { name: 'read_drive_file_content', description: 'Read the plain text content of a Google Drive file by its ID. Only works for text-based files (e.g., .txt, .md, Google Docs).', inputSchema: { type: 'object", properties: { fileId: { type: 'string', description: 'The ID of the Google Drive file to read.' } }, required: ['fileId'] } },
                             // أداة تنفيذ الأوامر الطرفية (خطر أمني)
-                            {
-                                name: 'execute_command',
-                                description: 'Execute a shell command on the server. DANGEROUS! Use ONLY for trusted, essential operations. Output is limited.',
-                                inputSchema: { type: 'object", properties: { command: { type: 'string', description: 'The shell command to execute.' } }, required: ['command'] }
-                            },
+                            { name: 'execute_command', description: 'Execute a shell command on the server. DANGEROUS! Use ONLY for trusted, essential operations. Output is limited.', inputSchema: { type: 'object", properties: { command: { type: 'string', description: 'The shell command to execute.' } }, required: ['command'] } },
                             // أدوات المرافق
-                            {
-                                name: 'summarize_text',
-                                description: 'Summarize a long piece of text. Useful when you have too much information and need to extract key points.',
-                                inputSchema: { type: 'object", properties: { text: { type: 'string', description: 'The text to summarize.' } }, required: ['text'] }
-                            },
-                            {
-                                name: 'get_current_time',
-                                description: 'Get the current date and time. Useful when you need up-to-date time information.',
-                                inputSchema: { type: 'object", properties: {} }
-                            },
-                            {
-                                name: 'perform_calculation',
-                                description: 'Perform a mathematical calculation or evaluate an expression. Useful for complex arithmetic or algebra.',
-                                inputSchema: { type: 'object", properties: { expression: { type: 'string', description: 'The mathematical expression to evaluate (e.g., "2 + 3 * 4").' } }, required: ['expression'] }
-                            },
+                            { name: 'summarize_text', description: 'Summarize a long piece of text. Useful when you have too much information and need to extract key points.', inputSchema: { type: 'object", properties: { text: { type: 'string', description: 'The text to summarize.' } }, required: ['text'] } },
+                            { name: 'get_current_time', description: 'Get the current date and time. Useful when you need up-to-date time information.', inputSchema: { type: 'object", properties: {} } },
+                            { name: 'perform_calculation', description: 'Perform a mathematical calculation or evaluate an expression. Useful for complex arithmetic or algebra.', inputSchema: { type: 'object", properties: { expression: { type: 'string', description: 'The mathematical expression to evaluate (e.g., "2 + 3 * 4").' } }, required: ['expression'] } },
                             // أدوات قائمة المهام
-                            {
-                                name: 'add_task',
-                                description: 'Add a new task to the To-Do list.',
-                                inputSchema: { type: 'object", properties: { description: { type: 'string', description: 'Description of the task.' } }, required: ['description'] }
-                            },
-                            {
-                                name: 'list_tasks',
-                                description: 'List all current tasks (pending and completed).',
-                                inputSchema: { type: 'object", properties: {} }
-                            },
-                            {
-                                name: 'complete_task',
-                                description: 'Mark a task as completed by its ID.',
-                                inputSchema: { type: 'object", properties: { taskId: { type: 'string', description: 'The ID of the task to mark as complete.' } }, required: ['taskId'] }
-                            },
-                            {
-                                name: 'clear_tasks',
-                                description: 'Clear all tasks from the To-Do list. Use with caution.',
-                                inputSchema: { type: 'object", properties: {} }
-                            }
+                            { name: 'add_task', description: 'Add a new task to the To-Do list.', inputSchema: { type: 'object", properties: { description: { type: 'string', description: 'Description of the task.' } }, required: ['description'] } },
+                            { name: 'list_tasks', description: 'List all current tasks (pending and completed).', inputSchema: { type: 'object", properties: {} } },
+                            { name: 'complete_task', description: 'Mark a task as completed by its ID.', inputSchema: { type: 'object", properties: { taskId: { type: 'string', description: 'The ID of the task to mark as complete.' } }, required: ['taskId'] } },
+                            { name: 'clear_tasks', description: 'Clear all tasks from the To-Do list. Use with caution.', inputSchema: { type: 'object", properties: {} } }
                         ]
                     };
 
@@ -194,71 +110,66 @@ async function handleRpcRequest(req, res) {
                     console.log(`[Tool Call] طلب تنفيذ أداة: ${toolName}`);
 
                     switch (toolName) {
-                        // أدوات الويب والبحث
-                        case 'search_web':
+                        case 'search_web': /* ... نفس الكود السابق ... */
                             if (!args || !args.query) { throw new Error("Query is missing for search_web."); }
                             toolResult = await searchDuckDuckGo(args.query);
                             break;
-                        case 'deep_search_web':
+                        case 'deep_search_web': /* ... نفس الكود السابق ... */
                             if (!args || !args.query) { throw new Error("Query is missing for deep_search_web."); }
                             toolResult = await deepSearchWeb(args.query);
                             break;
-                        case 'browse_url':
+                        case 'browse_url': /* ... نفس الكود السابق ... */
                             if (!args || !args.url) { throw new Error("URL is missing for browse_url."); }
                             toolResult = await browseUrl(args.url);
                             break;
-                        // أدوات الملفات المحلية (على الخادم)
-                        case 'list_directory':
+                        case 'list_directory': /* ... نفس الكود السابق ... */
                             toolResult = await listDirectory(args ? args.path : './');
                             break;
-                        case 'create_file':
+                        case 'create_file': /* ... نفس الكود السابق ... */
                             if (!args || !args.path || args.content === undefined) { throw new Error("Path and content are required for create_file."); }
                             toolResult = await createFile(args.path, args.content);
                             break;
-                        case 'read_file':
+                        case 'read_file': /* ... نفس الكود السابق ... */
                             if (!args || !args.path) { throw new Error("Path is required for read_file."); }
                             toolResult = await readFile(args.path);
                             break;
-                        case 'update_file':
+                        case 'update_file': /* ... نفس الكود السابق ... */
                             if (!args || !args.path || args.content === undefined) { throw new Error("Path and content are required for update_file."); }
                             toolResult = await updateFile(args.path, args.content);
                             break;
-                        case 'delete_file':
+                        case 'delete_file': /* ... نفس الكود السابق ... */
                             if (!args || !args.path) { throw new Error("Path is required for delete_file."); }
                             toolResult = await deleteFile(args.path);
                             break;
-                        case 'create_directory':
+                        case 'create_directory': /* ... نفس الكود السابق ... */
                             if (!args || !args.path) { throw new Error("Path is required for create_directory."); }
                             toolResult = await createDirectory(args.path);
                             break;
-                        case 'delete_directory':
+                        case 'delete_directory': /* ... نفس الكود السابق ... */
                             if (!args || !args.path) { throw new Error("Path is required for delete_directory."); }
                             toolResult = await deleteDirectory(args.path);
                             break;
-                        // أدوات Google Drive
-                        case 'list_drive_files':
+                        case 'list_drive_files': /* ... نفس الكود السابق ... */
                             if (!drive) throw new Error("Google Drive API not initialized.");
                             toolResult = await listDriveFiles(args ? args.parentId : null);
                             break;
-                        case 'read_drive_file_content':
+                        case 'read_drive_file_content': /* ... نفس الكود السابق ... */
                             if (!drive) throw new Error("Google Drive API not initialized.");
                             if (!args || !args.fileId) { throw new Error("File ID is missing for read_drive_file_content."); }
                             toolResult = await readDriveFileContent(args.fileId);
                             break;
-                        // أداة تنفيذ الأوامر الطرفية
-                        case 'execute_command':
+                        case 'execute_command': /* ... نفس الكود السابق ... */
                             if (!args || !args.command) { throw new Error("Command is missing for execute_command."); }
                             toolResult = await executeCommand(args.command);
                             break;
-                        // أدوات المرافق
-                        case 'summarize_text':
+                        case 'summarize_text': /* ... نفس الكود السابق ... */
                             if (!args || !args.text) { throw new Error("Text is missing for summarize_text."); }
                             toolResult = await summarizeText(args.text);
                             break;
-                        case 'get_current_time':
+                        case 'get_current_time': /* ... نفس الكود السابق ... */
                             toolResult = { currentTime: new Date().toISOString() };
                             break;
-                        case 'perform_calculation':
+                        case 'perform_calculation': /* ... نفس الكود السابق ... */
                             if (!args || !args.expression) { throw new Error("Expression is missing for perform_calculation."); }
                             try {
                                 const result = evaluate(args.expression);
@@ -267,19 +178,18 @@ async function handleRpcRequest(req, res) {
                                 throw new Error(`Invalid expression: ${e.message}`);
                             }
                             break;
-                        // أدوات قائمة المهام
-                        case 'add_task':
+                        case 'add_task': /* ... نفس الكود السابق ... */
                             if (!args || !args.description) { throw new Error("Description is required for add_task."); }
                             toolResult = addTask(args.description);
                             break;
-                        case 'list_tasks':
+                        case 'list_tasks': /* ... نفس الكود السابق ... */
                             toolResult = listTasks();
                             break;
-                        case 'complete_task':
+                        case 'complete_task': /* ... نفس الكود السابق ... */
                             if (!args || !args.taskId) { throw new Error("Task ID is required for complete_task."); }
                             toolResult = completeTask(args.taskId);
                             break;
-                        case 'clear_tasks':
+                        case 'clear_tasks': /* ... نفس الكود السابق ... */
                             toolResult = clearTasks();
                             break;
                         default:
@@ -326,7 +236,6 @@ async function handleRpcRequest(req, res) {
 // وظائف أدوات الويب والبحث
 // ====================================================================
 
-// وظيفة البحث في DuckDuckGo (بحث عام)
 function searchDuckDuckGo(query) {
     return new Promise((resolve, reject) => {
         const searchUrl = `${DUCKDUCKGO_API}&q=${encodeURIComponent(query)}`;
@@ -352,7 +261,6 @@ function searchDuckDuckGo(query) {
     });
 }
 
-// وظيفة البحث المعمق (تعتمد على نفس API ولكن تركز على استخراج نص أفضل)
 async function deepSearchWeb(query) {
     try {
         const searchUrl = `${DUCKDUCKGO_API}&q=${encodeURIComponent(query)}`;
@@ -362,48 +270,27 @@ async function deepSearchWeb(query) {
         const parsedData = response.data;
 
         let richContent = '';
-
-        // إضافة الملخص العام
-        if (parsedData.AbstractText) {
-            richContent += `Abstract: ${parsedData.AbstractText}\n`;
-        }
-        if (parsedData.AbstractURL) {
-            richContent += `Abstract URL: ${parsedData.AbstractURL}\n`;
-        }
-
-        // إضافة نتائج الموضوعات ذات الصلة بتفاصيل أكثر
+        if (parsedData.AbstractText) { richContent += `Abstract: ${parsedData.AbstractText}\n`; }
+        if (parsedData.AbstractURL) { richContent += `Abstract URL: ${parsedData.AbstractURL}\n`; }
         if (parsedData.RelatedTopics && parsedData.RelatedTopics.length > 0) {
             richContent += '\nRelated Topics:\n';
-            parsedData.RelatedTopics.slice(0, 3).forEach((item, index) => { // حد 3 نتائج عميقة
+            parsedData.RelatedTopics.slice(0, 3).forEach((item, index) => {
                 richContent += `${index + 1}. Title: ${item.Text || 'N/A'}\n`;
                 richContent += `   URL: ${item.FirstURL || 'N/A'}\n`;
-                if (item.Abstract) {
-                    richContent += `   Snippet: ${item.Abstract}\n`;
-                }
+                if (item.Abstract) { richContent += `   Snippet: ${item.Abstract}\n`; }
                 richContent += '\n';
             });
         }
-
-        // إضافة تعريفات (إذا وجدت)
-        if (parsedData.Definition) {
-            richContent += `\nDefinition: ${parsedData.Definition}\n`;
-        }
-
-        // الحد من طول المحتوى
+        if (parsedData.Definition) { richContent += `\nDefinition: ${parsedData.Definition}\n`; }
         const MAX_RICH_CONTENT_LENGTH = 3000;
-        if (richContent.length > MAX_RICH_CONTENT_LENGTH) {
-            richContent = richContent.substring(0, MAX_RICH_CONTENT_LENGTH) + '... (truncated)';
-        }
-
+        if (richContent.length > MAX_RICH_CONTENT_LENGTH) { richContent = richContent.substring(0, MAX_RICH_CONTENT_LENGTH) + '... (truncated)'; }
         return { query: query, richContent: richContent };
-
     } catch (error) {
         console.error(`Error during deep web search for '${query}': ${error.message}`);
         throw new Error(`Deep web search failed: ${error.message}`);
     }
 }
 
-// وظيفة تصفح URL واستخراج النص الرئيسي
 async function browseUrl(url) {
     try {
         const response = await axios.get(url, {
@@ -415,7 +302,6 @@ async function browseUrl(url) {
         $('script, style, nav, footer, header, form, iframe, img, svg, audio, video').remove();
 
         let textContent = $('body').text();
-
         textContent = textContent.replace(/\s+/g, ' ').trim();
         textContent = textContent.split('.\s*\n').map(s => s.trim()).filter(s => s.length > 10).join('.\n');
 
@@ -423,7 +309,6 @@ async function browseUrl(url) {
         if (textContent.length > MAX_TEXT_LENGTH) {
             textContent = textContent.substring(0, MAX_TEXT_LENGTH) + '... (truncated)';
         }
-
         return { url: url, content: textContent };
     } catch (error) {
         console.error(`Error browsing URL ${url}: ${error.message}`);
@@ -435,7 +320,6 @@ async function browseUrl(url) {
 // وظائف أدوات الملفات المحلية (على الخادم)
 // ====================================================================
 
-// دالة مساعدة للتحقق من المسار الآمن (لمنع Path Traversal)
 function getSafePath(inputPath) {
     const resolvedPath = path.resolve(process.cwd(), inputPath);
     if (!resolvedPath.startsWith(process.cwd())) {
@@ -474,7 +358,7 @@ async function readFile(filePath) {
     try {
         const safePath = getSafePath(filePath);
         const content = await fs.readFile(safePath, 'utf8');
-        const MAX_FILE_CONTENT_LENGTH = 5000; // حد أقصى للملفات المقروءة
+        const MAX_FILE_CONTENT_LENGTH = 5000;
         const truncatedContent = content.length > MAX_FILE_CONTENT_LENGTH ?
             content.substring(0, MAX_FILE_CONTENT_LENGTH) + '... (truncated)' : content;
         return { path: filePath, content: truncatedContent };
@@ -487,7 +371,7 @@ async function readFile(filePath) {
 async function updateFile(filePath, content) {
     try {
         const safePath = getSafePath(filePath);
-        await fs.writeFile(safePath, content, 'utf8'); // writeFile يقوم بالإنشاء أو الكتابة فوق
+        await fs.writeFile(safePath, content, 'utf8');
         return { status: 'success', message: `File '${filePath}' updated.` };
     } catch (error) {
         console.error(`Error updating file ${filePath}: ${error.message}`);
@@ -520,7 +404,7 @@ async function createDirectory(dirPath) {
 async function deleteDirectory(dirPath) {
     try {
         const safePath = getSafePath(dirPath);
-        await fs.rmdir(safePath); // rmdir يحذف المجلدات الفارغة فقط
+        await fs.rmdir(safePath);
         return { status: 'success', message: `Directory '${dirPath}' deleted.` };
     } catch (error) {
         console.error(`Error deleting directory ${dirPath}: ${error.message}`);
@@ -533,10 +417,10 @@ async function deleteDirectory(dirPath) {
 // ====================================================================
 async function executeCommand(command) {
     console.warn(`[SECURITY WARNING] Attempting to execute command: ${command}`);
-    const MAX_COMMAND_OUTPUT_LENGTH = 1000; // حد إخراج الأمر
+    const MAX_COMMAND_OUTPUT_LENGTH = 1000;
 
     return new Promise((resolve, reject) => {
-        exec(command, { timeout: 10000 }, (error, stdout, stderr) => { // مهلة 10 ثوانٍ
+        exec(command, { timeout: 10000 }, (error, stdout, stderr) => {
             if (error) {
                 console.error(`Error executing command: ${error.message}`);
                 reject(new Error(`Command failed: ${error.message}. Stderr: ${stderr.substring(0, MAX_COMMAND_OUTPUT_LENGTH)}`));
@@ -557,7 +441,7 @@ async function executeCommand(command) {
 // ====================================================================
 // وظائف أدوات Google Drive
 // ====================================================================
-async function listDriveFiles(parentId = 'root') { /* ... نفس الكود السابق ... */
+async function listDriveFiles(parentId = 'root') {
     try {
         const res = await drive.files.list({
             q: `'${parentId}' in parents and trashed=false`,
@@ -577,7 +461,7 @@ async function listDriveFiles(parentId = 'root') { /* ... نفس الكود ال
     }
 }
 
-async function readDriveFileContent(fileId) { /* ... نفس الكود السابق ... */
+async function readDriveFileContent(fileId) {
     try {
         const fileMetadata = await drive.files.get({ fileId: fileId, fields: 'mimeType, name' });
         const mimeType = fileMetadata.data.mimeType;
@@ -586,15 +470,15 @@ async function readDriveFileContent(fileId) { /* ... نفس الكود السا�
         const readableMimeTypes = [
             'text/plain', 'text/html', 'text/css', 'text/javascript', 'application/json',
             'application/xml', 'text/markdown', 'application/vnd.google-apps.document',
-            'application/vnd.google-apps.spreadsheet', // Google Sheets
-            'application/vnd.google-apps.presentation' // Google Slides
+            'application/vnd.google-apps.spreadsheet',
+            'application/vnd.google-apps.presentation'
         ];
 
         if (!readableMimeTypes.some(type => mimeType.includes(type))) {
             throw new Error(`File type '${mimeType}' for file '${fileName}' is not a readable text format.`);
         }
 
-        const res = await drive.files.export({ fileId: fileId, mimeType: 'text/plain' }, { responseType: 'stream' }); // تصدير كـ plain text
+        const res = await drive.files.export({ fileId: fileId, mimeType: 'text/plain' }, { responseType: 'stream' });
         let content = '';
         await new Promise((resolve, reject) => {
             res.data.on('data', chunk => content += chunk);
@@ -618,8 +502,7 @@ async function readDriveFileContent(fileId) { /* ... نفس الكود السا�
 // وظائف أدوات المرافق وقائمة المهام
 // ====================================================================
 
-// وظيفة تلخيص النص (وظيفة وهمية)
-async function summarizeText(text) { /* ... نفس الكود السابق ... */
+async function summarizeText(text) {
     const MAX_SUMMARY_INPUT_LENGTH = 1000;
     let processedText = text;
     if (text.length > MAX_SUMMARY_INPUT_LENGTH) {
@@ -628,7 +511,8 @@ async function summarizeText(text) { /* ... نفس الكود السابق ... *
     return { originalLength: text.length, processedLength: processedText.length, textForSummary: processedText };
 }
 
-// وظائف قائمة المهام
+const tasks = []; // قائمة بسيطة لتخزين المهام
+
 function addTask(description) {
     const newTask = {
         id: uuidv4(),
@@ -655,10 +539,9 @@ function completeTask(taskId) {
 }
 
 function clearTasks() {
-    tasks.length = 0; // مسح جميع عناصر المصفوفة
+    tasks.length = 0;
     return { status: 'success', message: 'All tasks cleared.' };
 }
-
 
 // ====================================================================
 // إنشاء وبدء الخادم (بدون تغيير)
