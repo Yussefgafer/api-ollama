@@ -31,9 +31,6 @@ TARGET_CHAT_ID = -1002707790272
 TIKTOK_SOURCES = [
     "funny",      # هاشتاج: https://www.tiktok.com/tag/funny
     "cats",       # هاشتاج: https://www.tiktok.com/tag/cats
-    "dance",      # هاشتاج: https://www.tiktok.com/tag/dance
-    "@charlidamelio", # اسم مستخدم: https://www.tiktok.com/@charlidamelio
-    "@khaby.lame", # اسم مستخدم
     # أضف المزيد من الهاشتاجات أو أسماء المستخدمين هنا
 ]
 # ------------------------------------------------------------------
@@ -62,8 +59,6 @@ def clean_temp_dir():
 
 def find_video_urls(text: str):
     """يبحث عن روابط الفيديوهات في النص."""
-    # نمط شامل لروابط الفيديو يدعم مواقع مثل TikTok و YouTube
-    # يمكن توسيعه ليشمل المزيد من المواقع إذا لزم الأمر
     pattern = r'https?://(?:www\.)?(?:tiktok\.com/[^\s]+|youtube\.com/watch\?v=[^\s]+|youtu\.be/[^\s]+)'
     return re.findall(pattern, text)
 
@@ -71,8 +66,8 @@ def extract_video_info_and_qualities(url: str):
     """يستخرج معلومات الفيديو وخيارات الجودة المتاحة."""
     ydl_opts = {
         'quiet': True,
-        'nocheckcertificate': True, # مفيد لبعض المواقع
-        'skip_download': True, # لا تقم بالتحميل، فقط استخرج المعلومات
+        'nocheckcertificate': True,
+        'skip_download': True,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -80,14 +75,11 @@ def extract_video_info_and_qualities(url: str):
             
             formats = []
             if 'formats' in info:
-                # تصفية الفيديوهات التي تحتوي على صوت وفيديو (أو فيديو فقط)
-                # وترتيبها حسب الجودة
                 formats = sorted([
                     f for f in info['formats'] 
                     if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('ext') == 'mp4'
                 ], key=lambda x: x.get('height', 0), reverse=True)
             
-            # بناء قائمة بخيارات الجودة الفريدة
             quality_options = []
             seen_qualities = set()
             for f in formats:
@@ -104,7 +96,6 @@ def extract_video_info_and_qualities(url: str):
                     })
                     seen_qualities.add(quality_label)
             
-            # ⚠️ تم تصحيح هذا السطر ⚠️
             quality_options.insert(0, {'label': 'أفضل جودة (Best)', 'format_id': 'best'})
 
             return info, quality_options
@@ -137,8 +128,8 @@ async def download_and_send_video(
         ydl_opts = {
             'format': format_id,
             'outtmpl': os.path.join(TEMP_DOWNLOAD_DIR, '%(id)s.%(ext)s'),
-            'writethumbnail': True, # لكتابة الصورة المصغرة
-            'postprocessors': [{ # لتحويل الصورة المصغرة إلى JPG إذا لزم الأمر
+            'writethumbnail': True,
+            'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
@@ -147,29 +138,25 @@ async def download_and_send_video(
                 'preferedformat': 'mp4'
             }, {
                 'key': 'EmbedThumbnail',
-                'already_have_thumbnail': False # لتضمين الصورة المصغرة في الفيديو (اختياري)
+                'already_have_thumbnail': False
             }],
             'quiet': True,
             'noplaylist': True,
             'nooverwrites': True,
-            'retries': 3,
+            'retries': 5, # زيادة عدد المحاولات
             'external_downloader_args': ['-loglevel', 'error'],
+            'download_ranges': None, # تأكد من عدم وجود قيود على النطاق
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(video_url, download=True)
             file_path = ydl.prepare_filename(info_dict)
             
-            # البحث عن مسار الصورة المصغرة
             if 'thumbnails' in info_dict and info_dict['thumbnails']:
-                thumbnail_url = info_dict['thumbnails'][-1]['url'] # آخر صورة مصغرة هي الأعلى جودة
+                thumbnail_url = info_dict['thumbnails'][-1]['url']
                 thumbnail_ext = thumbnail_url.split('.')[-1].split('?')[0]
                 thumbnail_path = os.path.join(TEMP_DOWNLOAD_DIR, f"{info_dict['id']}.{thumbnail_ext}")
-                # yt-dlp تقوم بتنزيل الصورة المصغرة تلقائيًا مع writethumbnail
-                # لذا يجب أن يكون الملف موجودًا بالفعل
                 if not os.path.exists(thumbnail_path):
-                    # في بعض الحالات قد لا تكون اللاحقة jpg/webp
-                    # نبحث عن أي ملف صورة مصغرة تم تنزيله
                     for fname in os.listdir(TEMP_DOWNLOAD_DIR):
                         if fname.startswith(info_dict['id']) and (fname.endswith('.jpg') or fname.endswith('.webp')):
                             thumbnail_path = os.path.join(TEMP_DOWNLOAD_DIR, fname)
@@ -193,7 +180,7 @@ async def download_and_send_video(
                         caption=f"صورة مصغرة للفيديو من: {video_url}",
                         reply_to_message_id=reply_to_message_id
                     )
-                await asyncio.sleep(1) # انتظر قليلاً قبل إرسال الفيديو
+                await asyncio.sleep(1)
 
             if file_size > TELEGRAM_MAX_FILE_SIZE:
                 logger.warning("حجم الفيديو كبير جدًا، سيتم إرسال رابط مباشر بدلاً من الملف.")
@@ -212,9 +199,9 @@ async def download_and_send_video(
                         video=video_file,
                         caption=caption,
                         reply_to_message_id=reply_to_message_id,
-                        read_timeout=180, # زيادة المهلة
-                        write_timeout=180, # زيادة المهلة
-                        connect_timeout=60 # زيادة المهلة
+                        read_timeout=240, # زيادة المهلة
+                        write_timeout=240, # زيادة المهلة
+                        connect_timeout=90 # زيادة المهلة
                     )
                 await context.bot.delete_message(chat_id=chat_id, message_id=processing_message.message_id)
 
@@ -242,16 +229,12 @@ async def start_download_conversation(update: Update, context: ContextTypes.DEFA
         await update.message.reply_text("الرجاء إرسال رابط فيديو صالح.")
         return ConversationHandler.END
 
-    # تخزين الروابط في user_data لكي نصل إليها لاحقًا
     context.user_data['video_urls'] = video_urls
     
-    # استخراج معلومات الجودة من أول رابط فقط لتقديم الخيارات
-    # نفترض أن الجودة ستكون متشابهة لمعظم الفيديوهات من نفس الموقع
     first_url_info, quality_options = extract_video_info_and_qualities(video_urls[0])
 
     if not quality_options:
         await update.message.reply_text("عذرًا، لم أتمكن من العثور على خيارات جودة لهذا الفيديو. 😞")
-        # حاول تنزيل أفضل جودة تلقائيا إذا لم تتوفر خيارات
         await download_and_send_video(
             chat_id, video_urls[0], context, update.message.message_id, 'best'
         )
@@ -273,7 +256,7 @@ async def start_download_conversation(update: Update, context: ContextTypes.DEFA
 async def handle_quality_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """يعالج اختيار المستخدم للجودة ويبدأ التحميل."""
     query = update.callback_query
-    await query.answer() # يجب استدعاء answer() لإنهاء استعلام رد الاتصال
+    await query.answer()
 
     selected_format_id = query.data
     chat_id = query.message.chat_id
@@ -295,9 +278,9 @@ async def handle_quality_selection(update: Update, context: ContextTypes.DEFAULT
         await download_and_send_video(
             chat_id, url, context, original_message_id, selected_format_id
         )
-        await asyncio.sleep(2) # انتظر قليلاً بين الفيديوهات إذا كانت متعددة
+        await asyncio.sleep(2)
 
-    context.user_data.clear() # تنظيف بيانات المستخدم بعد الانتهاء
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -323,7 +306,7 @@ async def send_random_tiktok_video_to_group(context: ContextTypes.DEFAULT_TYPE):
 
     video_url_to_download = None
     try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'noplaylist': True}) as ydl:
+        with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'noplaylist': True, 'retries': 5}) as ydl: # زيادة محاولات yt-dlp
             info = ydl.extract_info(tiktok_search_url, download=False)
             
             entries = []
@@ -432,5 +415,5 @@ def main() -> None:
     logger.info("البوت توقف عن العمل.")
 
 
-if __name__ == "__main__": # تم تصحيح هذا السطر أيضاً
+if __name__ == "__main__":
     main()
