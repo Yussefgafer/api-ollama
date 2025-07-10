@@ -104,8 +104,8 @@ def extract_video_info_and_qualities(url: str):
                     })
                     seen_qualities.add(quality_label)
             
-            # إضافة خيار "أفضل جودة"
-            quality_options.insert(0, {'label': 'أفضل جودة (Best)", 'format_id': 'best'})
+            # ⚠️ تم تصحيح هذا السطر ⚠️
+            quality_options.insert(0, {'label': 'أفضل جودة (Best)', 'format_id': 'best'})
 
             return info, quality_options
     except yt_dlp.utils.DownloadError as e:
@@ -432,5 +432,5 @@ def main() -> None:
     logger.info("البوت توقف عن العمل.")
 
 
-if __name__ == "__main__quot;:
+if __name__ == "__main__": # تم تصحيح هذا السطر أيضاً
     main()
