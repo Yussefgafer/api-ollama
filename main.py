@@ -12,12 +12,11 @@ from telegram.constants import ParseMode
 # تحذير: لا تشارك هذا الكود مع أي شخص إذا كان يحتوي على التوكن!
 TELEGRAM_BOT_TOKEN = "7322598673:AAHLPboj2lG4qNB7DiSdUG7YT_v_kuuYkc8"
 
-# هام جدًا: يجب أن تحصل على معرّف المجموعة الرقمي. انظر التعليمات في الأسفل.
-# المعرّف الرقمي للمجموعات الخاصة يبدأ بـ -100
+# هام جدًا: يجب أن تحصل على معرّف المجموعة الرقمي.
 # استبدل 0 بالمعرّف الصحيح بعد الحصول عليه.
+# تأكد من أنه رقم وليس نصًا.
 TARGET_CHAT_ID = 0 
 # ------------------------------------------------------------------
-
 
 # إعداد سجلات (logs) لمتابعة ما يفعله البوت على Koyeb
 logging.basicConfig(
@@ -31,7 +30,6 @@ TELEGRAM_MAX_FILE_SIZE = 50 * 1024 * 1024
 
 def find_tiktok_url(text: str):
     """يبحث عن رابط تيك توك في النص باستخدام تعبير نمطي."""
-    # هذا النمط يبحث عن روابط تيك توك القياسية والمختصرة
     pattern = r'https?://(?:www\.|vm\.|vt\.)?tiktok\.com/[^\s]+'
     match = re.search(pattern, text)
     if match:
@@ -64,24 +62,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.message.chat_id
     message_text = update.message.text
 
-    # طباعة معرّف الدردشة للمساعدة في الإعداد لأول مرة
     logger.info(f"رسالة مستلمة في الدردشة رقم: {chat_id}")
 
-    # تحقق مما إذا كانت الرسالة من المجموعة المستهدفة
-    if chat_id != TARGET_CHAT_ID:
-        # إذا لم تقم بتعيين TARGET_CHAT_ID بعد، تجاهل هذا الشرط مؤقتًا
-        if TARGET_CHAT_ID != 0:
-            logger.warning(f"تم تجاهل الرسالة من دردشة غير مستهدفة: {chat_id}")
-            return
+    # التحقق مما إذا كانت الرسالة من المجموعة المستهدفة
+    # نستخدم int() للتأكد من أننا نقارن أرقامًا
+    if TARGET_CHAT_ID != 0 and chat_id != int(TARGET_CHAT_ID):
+        logger.warning(f"تم تجاهل الرسالة من دردشة غير مستهدفة: {chat_id}")
+        return
 
-    # ابحث عن رابط TikTok في الرسالة
     tiktok_url = find_tiktok_url(message_text)
     if not tiktok_url:
-        return # لا يوجد رابط، لا تفعل شيئًا
+        return
 
     logger.info(f"تم العثور على رابط TikTok: {tiktok_url}")
     
-    # إرسال رسالة للمستخدم لإعلامه بأن المعالجة بدأت
     processing_message = await context.bot.send_message(
         chat_id=chat_id,
         text="جاري معالجة الرابط... ⏳",
@@ -123,7 +117,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     caption=caption,
                     reply_to_message_id=update.message.message_id
                 )
-            # حذف رسالة "جاري المعالجة" بعد الإرسال الناجح
             await context.bot.delete_message(chat_id=chat_id, message_id=processing_message.message_id)
 
     except Exception as e:
@@ -134,7 +127,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             text=f"حدث خطأ: {e}"
         )
     finally:
-        # تأكد من حذف الملف المؤقت دائمًا
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
             logger.info(f"تم حذف الملف المؤقت: {file_path}")
@@ -148,14 +140,10 @@ def main() -> None:
         logger.warning("لم يتم تعيين TARGET_CHAT_ID. البوت سيستجيب في أي مكان تتم إضافته إليه.")
         logger.warning("أرسل أي رسالة في مجموعتك، وانسخ الـ ID من السجلات (logs)، ثم ضعه في الكود وأعد النشر.")
 
-    # إنشاء التطبيق
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    # إضافة معالج للرسائل النصية والصور (التي قد تحتوي على روابط في التعليق)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("البوت بدأ التشغيل...")
-    # تشغيل البوت حتى يتم إيقافه يدويًا
     application.run_polling()
 
 if __name__ == "__main__":

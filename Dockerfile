@@ -1,18 +1,42 @@
-# الخطوة 1: استخدم صورة Python رسمية كأساس
-FROM python:3.10-slim
+# --- المرحلة الأولى: البنّاء (Builder) ---
+# نستخدم صورة كاملة تحتوي على أدوات البناء اللازمة
+FROM python:3.10 as builder
 
-# الخطوة 2: تعيين مجلد العمل داخل الحاوية
+# تحديث وتثبيت حزم النظام:
+# build-essential: ضرورية لتجميع بعض مكتبات بايثون
+# ffmpeg: ضرورية لمعالجة الفيديو
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ffmpeg \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# إنشاء بيئة بايثون افتراضية معزولة (ممارسة جيدة)
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# نسخ ملف الاعتماديات وتثبيت المكتبات داخل البيئة الافتراضية
 WORKDIR /app
-
-# الخطوة 3: تثبيت الأدوات اللازمة (ffmpeg)
-RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
-
-# الخطوة 4: نسخ ملف الاعتماديات وتثبيتها
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# الخطوة 5: نسخ كود البوت إلى مجلد العمل
+
+# --- المرحلة الثانية: الصورة النهائية (Final Image) ---
+# نعود إلى الصورة النحيفة للحفاظ على الحجم الصغير
+FROM python:3.10-slim
+
+# من مرحلة البناء، انسخ فقط ما نحتاجه:
+# 1. برنامج ffmpeg
+COPY --from=builder /usr/bin/ffmpeg /usr/bin/ffmpeg
+# 2. البيئة الافتراضية الكاملة مع كل المكتبات المثبتة
+COPY --from=builder /opt/venv /opt/venv
+
+# تفعيل البيئة الافتراضية في الصورة النهائية
+ENV PATH="/opt/venv/bin:$PATH"
+
+# إعداد مجلد العمل ونسخ كود التطبيق
+WORKDIR /app
 COPY main.py .
 
-# الخطوة 6: تحديد الأمر لتشغيل البوت بشكل دائم
+# الأمر النهائي لتشغيل البوت
 CMD ["python", "main.py"]
